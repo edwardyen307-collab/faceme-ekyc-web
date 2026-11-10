@@ -4,3 +4,7 @@ tests/out/
 .env
 faceme-sdk/
 __pycache__/
+/sdk/
+faceme-docs/
+*.pdf
+*notes-local*.md

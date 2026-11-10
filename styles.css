@@ -77,3 +77,11 @@ footer label.sub { margin-left:24px; font-size:12px; opacity:.85; }
 .retake-row { display:flex; gap:10px; margin-top:10px; }
 .retake-row .btn { flex:1; }
 .steps-list { margin:6px 0; padding-left:20px; }
+
+/* v2026-11-11c */
+.tips { margin: 8px 0 0; padding-left: 1.2em; font-size: 14px; color: #b8c2d6; line-height: 1.5; }
+.tips li { margin: 4px 0; }
+.note.pre { white-space: pre-line; }
+.stage.sdk-mode video, .stage.sdk-mode svg, .stage.sdk-mode #progress { visibility: hidden; }
+.sdk-block { position: absolute; inset: 0; z-index: 2; }
+.sdk-hint { position: absolute; left: 0; right: 0; bottom: 18%; z-index: 3; text-align: center; padding: 0 16px; }

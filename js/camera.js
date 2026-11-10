@@ -35,17 +35,10 @@ export class Camera {
     if (this.video) this.video.srcObject = null;
   }
 
-  /** Short description of the active camera for the eKYC `detail.cameraInfo` field. */
+  /** Camera name for the eKYC `detail.cameraInfo` field (doc example is the device label, e.g. "<model>(<vid>:<pid>)"). */
   info() {
     const t = this.stream && this.stream.getVideoTracks()[0];
-    if (!t) return '';
-    const st = (t.getSettings && t.getSettings()) || {};
-    const parts = [t.label || 'camera'];
-    if (st.facingMode) parts.push('facingMode=' + st.facingMode);
-    const w = st.width || this.video.videoWidth, h = st.height || this.video.videoHeight;
-    if (w && h) parts.push(w + 'x' + h + (st.frameRate ? '@' + Math.round(st.frameRate) : ''));
-    parts.push(navigator.userAgent.replace(/^Mozilla\/5\.0 /, '').slice(0, 120));
-    return parts.join('; ');
+    return (t && t.label) || (this.facing === 'user' ? 'front camera' : 'back camera');
   }
 
   get mirrored() { return this.facing === 'user'; }

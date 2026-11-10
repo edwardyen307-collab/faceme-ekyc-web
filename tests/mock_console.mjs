@@ -22,18 +22,24 @@ http.createServer((req, res) => {
     const echo = { path: req.url, auth: req.headers.authorization || null, platformAuth: req.headers['platform-auth'] || null, fields, values, bytes: body.length };
     console.log(JSON.stringify({ path: echo.path, auth: echo.auth, platformAuth: echo.platformAuth, fields, values }));
     const send = (code, obj) => res.writeHead(code, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ...obj, _echo: echo }));
+    if (req.url === '/api/request/' || req.url === '/api/request') {
+      const tpl = new URLSearchParams(body).get('requestTemplateUuid');
+      console.log(JSON.stringify({ createRequest: tpl, ctype: req.headers['content-type'] }));
+      return send(200, { requestUuid: 'req-mock-0001', platformToken: 'pt-mock-per-request', ekycToken: 'ek-mock-should-be-stripped' });
+    }
     if (req.url.endsWith('/face/spoofingcheck')) {
       if (SC === 'errors') return send(200, { result: 'spoofing', livenessScore: 0.12, clearImageIndex: 3 });
-      return send(200, { result: 'liveness', livenessScore: 0.97, clearImageIndex: JSON.parse(values.detail || '{}')?.stg1_act_1?.still ?? 0, deepfakeDetectStatus: 'notDetected', deepfakeDetectConfidence: 0.02 });
+      return send(200, { result: 'liveness', livenessScore: 0.97, clearImageIndex: JSON.parse(values.detail || '{}')?.stg1_act_1?.still ?? 0, deepfakeDetectStatus: 'real', deepfakeDetectConfidence: 0.02 });
     }
     if (req.url.endsWith('/idcard/ocr')) {
       if (SC === 'needmore') return send(200, { result: 'needMoreImage' });
-      if (SC === 'errors') return send(400, { message: "Can't find the ID card." });
-      return send(200, { result: 'ok', info: { name: '王測試', idNumber: 'A123456789', type: values.type } });
+      if (SC === 'errors') return send(400, { message: 'Image has reflection.' });
+      // flat info object, as in the document's response example
+      return send(200, { fullName: '王測試', sex: '男', dateOfBirth: '民國80年1月1日', dateOfIssue: '民國110年5月5日', parsedLocationFromDateOfIssue: '北市', identityNumber: 'A123456789' });
     }
     if (req.url.endsWith('/compare-boost/idcard')) {
       if (SC === 'errors') return send(503, { message: 'Please setup FaceMe Platform first.' });
-      return send(200, { isMatch: true, similarity: 0.93 });
+      return send(200, { thresholds: { idcard: 0.68 }, isMatch: true, similarity: 0.93, faceInfo: { boundingBox: { left: 10, top: 10, right: 90, bottom: 110 } }, face2Info: { boundingBox: { left: 100, top: 80, right: 300, bottom: 330 } } });
     }
     send(404, { message: 'not found' });
   });

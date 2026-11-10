@@ -1,8 +1,8 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11b):
+// Results (v2026-11-11c):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
-//                      face/spoofingcheck img_stg1_act_1), still: index of the still frame in frames,
+//                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
 import { CardDetector } from '../card-detector.js';
 import { FaceChecker, loadLandmarker } from '../face-checker.js';
@@ -89,7 +89,7 @@ export class OpenSourceEngine {
         const image = await cam.grab(crop, 1280);
         seq.push(await cam.grab(crop, SEQ_MAX_W));
         while (seq.length > SEQ_MAX) seq.shift();
-        return { image, frames: seq.slice(), still: seq.length - 1, cameraInfo: cam.info() };
+        return { image, frames: seq.slice(), stillIndex: seq.length - 1, cameraInfo: cam.info() };
       }
       if (nFaces === 1 && ts - lastSeq >= SEQ_GRAB_MS) {
         lastSeq = ts;

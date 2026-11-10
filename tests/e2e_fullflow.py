@@ -7,6 +7,8 @@ from playwright.sync_api import sync_playwright
 BASE = sys.argv[1]; SHOT = sys.argv[2]
 REAL = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != '-' else None
 CTYPE = sys.argv[4] if len(sys.argv) > 4 else None
+EXTRA = json.loads(os.environ.get('EKYC_CFG', '{}'))
+QUERY = os.environ.get('EKYC_QUERY', '')
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
 INIT = """
 (() => {
@@ -30,9 +32,9 @@ with sync_playwright() as p:
     page.add_init_script(INIT)
     page.route('**/__feeds/*.webm', lambda r: r.fulfill(path=os.path.join(OUT, r.request.url.split('/')[-1]), content_type='video/webm'))
     if REAL:
-        page.add_init_script('localStorage.setItem("ekyc-upload-config-v1", JSON.stringify({mode:"real",baseUrl:%s,token:"",remember:true}))' % json.dumps(REAL))
+        page.add_init_script('localStorage.setItem("ekyc-upload-config-v1", JSON.stringify(Object.assign({mode:"real",baseUrl:%s,token:"",remember:true}, %s)))' % (json.dumps(REAL), json.dumps(EXTRA)))
     page.on('pageerror', lambda e: print('[pageerror]', e))
-    page.goto(BASE + '?manualAfter=60000')
+    page.goto(BASE + '?manualAfter=60000' + QUERY)
     res['title'] = page.title()
     if CTYPE: page.select_option('#card-type', CTYPE)
     page.click('#btn-start')
@@ -45,6 +47,8 @@ with sync_playwright() as p:
     res['reached_review'] = page.evaluate("window.__ekyc.state.step") == 'review'
     res['meta'] = [page.inner_text('#card-meta'), page.inner_text('#face-meta')]
     res['cameraInfo'] = page.evaluate('window.__ekyc.shots.face.cameraInfo')
+    res['face_detail'] = page.evaluate('window.__ekyc.shots.face.detail || null')
+    res['sdk_calls'] = page.evaluate('window.FaceMe && window.FaceMe.__calls ? JSON.stringify(window.FaceMe.__calls) : null')
     page.screenshot(path=SHOT + 'review.png')
     page.click('#btn-upload')
     page.wait_for_function("!document.getElementById('btn-upload').disabled && document.getElementById('upload-result').textContent.length > 20", timeout=30000)

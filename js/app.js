@@ -1,8 +1,8 @@
-import { APP_VERSION } from './version.js?v=2026-11-11b';
-import { Camera } from './camera.js?v=2026-11-11b';
-import { createEngine } from './engines/index.js?v=2026-11-11b';
-import { CARD_ASPECT } from './card-detector.js?v=2026-11-11b';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES } from './upload.js?v=2026-11-11b';
+import { APP_VERSION } from './version.js?v=2026-11-11c';
+import { Camera } from './camera.js?v=2026-11-11c';
+import { createEngine } from './engines/index.js?v=2026-11-11c';
+import { CARD_ASPECT } from './card-detector.js?v=2026-11-11c';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue } from './upload.js?v=2026-11-11c';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -15,11 +15,12 @@ const els = {
   manual: $('btn-manual'),
 };
 const camera = new Camera(els.video, els.stage);
-const engine = createEngine(params.get('engine') || 'opensource', { sdkUrl: params.get('sdk') || '' });
 let cfg = loadConfig();
+const ENGINE_KIND = params.get('engine') === 'faceme' ? 'faceme' : 'opensource';
+const engine = createEngine(ENGINE_KIND, { sdkUrl: params.get('sdk') || '', resPath: params.get('sdkRes') || '', strictMode: !!cfg.strictMode });
 
 // In-memory only. Object URLs are revoked whenever an image is replaced or reset.
-// card = { image, frames[], type }   face = { image, frames[], still, cameraInfo }
+// card = { image, frames[], type }   face = { image, frames[], stillIndex | (detail, still), cameraInfo }
 const shots = { card: null, face: null, cardUrl: null, faceUrl: null };
 const state = { step: 'intro', retakeOnly: false, guide: null, kind: null, lastHint: '', lastHintAt: 0, manualTimer: 0 };
 const forceRef = { now: false };
@@ -134,15 +135,15 @@ async function runCapture(kind) {
   layoutGuide(kind);
   log({ camera: camera.facing, w: els.video.videoWidth, h: els.video.videoHeight });
   state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS);
-  const ctx = { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef };
+  const ctx = { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef, cardType: typeSel.value };
   const raw = kind === 'card' ? await engine.captureIdCard(ctx) : await engine.captureFace(ctx);
   clearTimeout(state.manualTimer);
   flash();
   // engines may return a bare Blob (e.g. FaceMe SDK adapter) or { image, frames, ... }
-  const shot = raw instanceof Blob ? { image: raw, frames: [raw], still: 0 } : raw;
+  const shot = raw instanceof Blob ? { image: raw, frames: [raw], stillIndex: 0 } : raw;
   if (kind === 'card') shot.type = typeSel.value;
   if (kind === 'face' && !shot.cameraInfo) shot.cameraInfo = camera.info();
-  log({ captured: kind, bytes: shot.image.size, frames: shot.frames.length, still: shot.still, manual: forceRef.now });
+  log({ captured: kind, bytes: shot.image.size, frames: shot.frames.length, still: kind === 'face' ? stillValue(shot, cfg) : undefined, manual: forceRef.now });
   setShot(kind, shot);
   await new Promise(r => setTimeout(r, 350));
   return shot;
@@ -181,7 +182,7 @@ function showReview() {
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
   $('card-meta').textContent = `${typeLabel()}・保留 ${shots.card.frames.length} 張供 OCR（顯示最清晰的一張）` + (shots.card.frames.length < 3 ? '。手動拍照只有 1 張，OCR 可能要求補拍，建議重拍讓系統自動拍。' : '');
-  $('face-meta').textContent = `活體序列 ${shots.face.frames.length} 張・靜止幀 #${shots.face.still}`;
+  $('face-meta').textContent = `活體序列 ${shots.face.frames.length} 張` + (shots.face.detail ? '・活體資料由 FaceMe SDK 產生' : `・靜止幀為第 ${(shots.face.stillIndex ?? 0) + 1} 張`);
   $('upload-result').hidden = true;
   $('btn-upload').disabled = false;
   renderMode();
@@ -216,9 +217,10 @@ $('btn-upload').addEventListener('click', async () => {
       html += `<div class="note">證件 ${shots.card.frames.length} 張（${kb(shots.card.frames)}）、人臉序列 ${shots.face.frames.length} 張（${kb(shots.face.frames)}）。</div>`;
     } else {
       html += `<div class="${allOk ? 'ok' : 'bad'}">${allOk ? '✓ 驗證完成' : '✗ 驗證未通過，請依下方說明處理'}</div>`;
+      if (r.request && r.request.requestUuid) html += `<div class="note">eKYC 案件：${esc(r.request.requestUuid)}</div>`;
       html += r.steps.map(s => {
         let line = `<div class="step-res"><div class="${s.ok ? 'ok' : 'bad'}">${s.ok ? '✓' : '✗'} ${esc(s.name)}：${esc(s.verdict || s.error || '')}</div>`;
-        if (s.summary) line += `<div class="note">${esc(s.summary).slice(0, 600)}</div>`;
+        if (s.summary) line += `<div class="note pre">${esc(s.summary.slice(0, 1200))}</div>`;
         if (s.data !== undefined) line += `<details><summary>原始回應</summary><pre>${esc(JSON.stringify(s.data, null, 1)).slice(0, 3000)}</pre></details>`;
         return line + '</div>';
       }).join('');
@@ -238,17 +240,24 @@ function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<'
 
 // ---------- admin settings ----------
 const form = $('admin-form');
-const BOOL_KEYS = ['doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'remember'];
+const BOOL_KEYS = ['useRequest', 'doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'idLargestFace', 'stillZeroBased', 'remember'];
+const TEXT_KEYS = ['baseUrl', 'token', 'platformAuth', 'templateUuid'];
 function fillForm() {
   form.mode.value = cfg.mode;
-  for (const k of ['baseUrl', 'token', 'platformAuth']) form[k].value = cfg[k] || '';
+  for (const k of TEXT_KEYS) form[k].value = cfg[k] || '';
   for (const k of BOOL_KEYS) form[k].checked = !!cfg[k];
   $('real-fields').disabled = cfg.mode !== 'real';
+  // enableStrictMode uses the FaceMe web component's encryption: only meaningful with the SDK engine
+  form.strictMode.disabled = ENGINE_KIND !== 'faceme';
+  if (ENGINE_KIND !== 'faceme') form.strictMode.checked = false;
 }
 form.addEventListener('change', () => { $('real-fields').disabled = form.mode.value !== 'real'; });
 $('btn-save-admin').addEventListener('click', () => {
-  cfg = { ...cfg, mode: form.mode.value, baseUrl: form.baseUrl.value.trim(), token: form.token.value.trim(), platformAuth: form.platformAuth.value.trim(), cardType: typeSel.value };
+  cfg = { ...cfg, mode: form.mode.value, cardType: typeSel.value };
+  for (const k of TEXT_KEYS) cfg[k] = form[k].value.trim();
   for (const k of BOOL_KEYS) cfg[k] = form[k].checked;
+  if (ENGINE_KIND !== 'faceme') cfg.strictMode = false;
+  engine.strictMode = !!cfg.strictMode;
   saveConfig(cfg); renderMode();
   const s = $('admin-saved'); s.hidden = false; setTimeout(() => { s.hidden = true; }, 1500);
 });

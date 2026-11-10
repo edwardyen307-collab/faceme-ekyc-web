@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1f33">
 <meta name="robots" content="noindex">
-<title>eKYC · FaceMe 預覽 v2026-11-11b</title>
+<title>eKYC · FaceMe 預覽 v2026-11-11c</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11b">
+<link rel="stylesheet" href="styles.css?v=2026-11-11c">
 </head>
 <body>
 <header class="top">
-  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11b</h1>
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11c</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
     <li data-step="face"><span>2</span>拍人臉</li>
@@ -29,6 +29,10 @@
         <li><b>拍攝人臉</b>：切換成自拍鏡頭，正面看鏡頭、臉放進橢圓框並保持不動，系統會自動拍照。</li>
         <li><b>確認照片</b>：可重拍或上傳。</li>
       </ol>
+      <ul class="tips">
+        <li>證件請平放在乾淨的桌面，或用手指拿著但不要遮住資料；有反光或陰影時，換個角度或位置。</li>
+        <li>自拍時盡量和證件照一樣：露出耳朵、瀏海不要蓋住額頭、拿下眼鏡與口罩，畫面中只能有你一個人。</li>
+      </ul>
       <p class="note">拍攝的照片只保存在這支手機的瀏覽器記憶體中，關閉頁面即消失。<span id="mode-note"></span></p>
       <label class="field">要拍的證件
         <select id="card-type" aria-label="證件種類"></select>
@@ -88,14 +92,18 @@
       <fieldset id="real-fields">
         <label>eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
         <label>Access Token（Authorization）<input name="token" type="password" autocomplete="off"></label>
-        <label>platform-auth（選填）<input name="platformAuth" type="password" autocomplete="off"></label>
+        <label>platform-auth（選填，固定值）<input name="platformAuth" type="password" autocomplete="off"></label>
+        <label><input type="checkbox" name="useRequest"> 先建立 eKYC 案件（/api/request/），用回傳的 platformToken 當 platform-auth</label>
+        <label class="sub">範本 UUID（requestTemplateUuid；經由代理時可留空）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
         <p class="note">實際上傳依序呼叫：</p>
         <label><input type="checkbox" name="doSpoof" checked> ① 人臉活體檢查（face/spoofingcheck，送出整段人臉序列）</label>
-        <label class="sub"><input type="checkbox" name="strictMode"> enableStrictMode</label>
+        <label class="sub"><input type="checkbox" name="strictMode"> enableStrictMode（僅限 FaceMe Web SDK 引擎）</label>
         <label class="sub"><input type="checkbox" name="deepfake"> enableDeepfakeDetect</label>
+        <label class="sub"><input type="checkbox" name="stillZeroBased"> still 從 0 起算（預設從 1 起算）</label>
         <label><input type="checkbox" name="doOcr" checked> ② 證件 OCR（idcard/ocr，送出最清晰 3 張）</label>
         <label class="sub"><input type="checkbox" name="imageDeskewed"> imageDeskewed（影像已校正）</label>
         <label><input type="checkbox" name="doCompare" checked> ③ 證件與人臉 1:1 比對（compare-boost/idcard）</label>
+        <label class="sub"><input type="checkbox" name="idLargestFace" checked> 證件影像有多張臉時取最大（multipleFacePriority1=Largest）</label>
         <label><input type="checkbox" disabled> 證件偽造檢查（idcard/forgery）：需另拍 5 張正面＋2 張右側斜拍，尚未實作</label>
         <label><input type="checkbox" name="remember"> 記住在這台裝置（localStorage）</label>
         <p class="note">Token 不會寫進網址或程式碼。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
@@ -103,7 +111,7 @@
       <fieldset>
         <legend>偵測引擎</legend>
         <p id="engine-label" class="note"></p>
-        <p class="note">改用 FaceMe Web SDK：網址加 <code>?engine=faceme&amp;sdk=./faceme-sdk/xxx.js</code>（SDK 檔需另行取得，不在此 repo）。</p>
+        <p class="note">改用 FaceMe Web SDK：網址加 <code>?engine=faceme&amp;sdk=./sdk/faceme-web-sdk.js</code>（SDK 與模型檔需從 FaceMe Platform Central 另行取得，不在此 repo；.fmin 需以 application/octet-stream 提供）。</p>
       </fieldset>
       <button id="btn-save-admin" class="btn" type="button">儲存設定</button>
       <span id="admin-saved" class="note" hidden>已儲存</span>
@@ -111,6 +119,6 @@
   </details>
   <p class="ver">版本 <span id="ver"></span> · 偵測在手機瀏覽器內執行</p>
 </footer>
-<script type="module" src="js/app.js?v=2026-11-11b"></script>
+<script type="module" src="js/app.js?v=2026-11-11c"></script>
 </body>
 </html>
