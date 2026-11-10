@@ -1,6 +1,6 @@
 :root { --bg:#0b1f33; --fg:#fff; --ok:#22c55e; --warn:#facc15; --bad:#f87171; --pri:#2563eb; --card:#13304d; }
 * { box-sizing: border-box; }
-html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; -webkit-text-size-adjust:100%; }
+html, body { margin:0; background:var(--bg); color:var(--fg); font-family: -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; -webkit-text-size-adjust:100%; }
 body { display:flex; flex-direction:column; min-height:100dvh; }
 .top { padding: calc(env(safe-area-inset-top) + 8px) 12px 6px; }
 .top h1 { font-size: 15px; margin:0 0 6px; font-weight:600; opacity:.9; }
@@ -9,7 +9,9 @@ body { display:flex; flex-direction:column; min-height:100dvh; }
 .steps li span { display:inline-block; width:18px; height:18px; line-height:18px; border-radius:50%; background:rgba(255,255,255,.2); margin-right:4px; font-size:12px; }
 .steps li.active { opacity:1; background:var(--pri); }
 .steps li.done { opacity:.9; background:rgba(34,197,94,.35); }
-main { flex:1; display:flex; flex-direction:column; min-height:0; }
+main { flex:1 0 auto; display:flex; flex-direction:column; }
+body.capturing { height:100dvh; overflow:hidden; }
+body.capturing main { flex:1 1 auto; min-height:0; }
 .screen { display:none; flex:1; flex-direction:column; min-height:0; }
 .screen.active { display:flex; }
 .panel { margin:12px; padding:18px; background:var(--card); border-radius:16px; }

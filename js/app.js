@@ -28,7 +28,7 @@ const log = (e) => { window.__ekyc.events.push({ t: Math.round(performance.now()
 
 $('ver').textContent = APP_VERSION;
 const typeSel = $('card-type');
-for (const [v, label] of CARD_TYPES) { const o = document.createElement('option'); o.value = v; o.textContent = label + '（' + v + '）'; typeSel.appendChild(o); }
+for (const [v, label] of CARD_TYPES) { const o = document.createElement('option'); o.value = v; o.textContent = label; typeSel.appendChild(o); }
 typeSel.value = cfg.cardType || 'TW_ID_CARD_FRONT';
 typeSel.addEventListener('change', () => { cfg.cardType = typeSel.value; if (cfg.remember) saveConfig(cfg); });
 const typeLabel = () => (CARD_TYPES.find(t => t[0] === typeSel.value) || [, '證件'])[1];
