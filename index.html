@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1f33">
 <meta name="robots" content="noindex">
-<title>eKYC · FaceMe 預覽 v2026-11-11a</title>
+<title>eKYC · FaceMe 預覽 v2026-11-11b</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11a">
+<link rel="stylesheet" href="styles.css?v=2026-11-11b">
 </head>
 <body>
 <header class="top">
-  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11a</h1>
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11b</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
     <li data-step="face"><span>2</span>拍人臉</li>
@@ -30,6 +30,9 @@
         <li><b>確認照片</b>：可重拍或上傳。</li>
       </ol>
       <p class="note">拍攝的照片只保存在這支手機的瀏覽器記憶體中，關閉頁面即消失。<span id="mode-note"></span></p>
+      <label class="field">要拍的證件
+        <select id="card-type" aria-label="證件種類"></select>
+      </label>
       <button id="btn-start" class="btn primary big" type="button">開始驗證</button>
       <p id="intro-error" class="error" role="alert" hidden></p>
     </div>
@@ -58,8 +61,8 @@
   <section id="screen-review" class="screen" aria-labelledby="review-h">
     <h2 id="review-h" class="sr">確認照片</h2>
     <div class="shots">
-      <figure><figcaption>① 證件照</figcaption><img id="img-card" alt="拍攝的證件照"></figure>
-      <figure><figcaption>② 人臉照</figcaption><img id="img-face" alt="拍攝的人臉照"></figure>
+      <figure><figcaption>① 證件照</figcaption><img id="img-card" alt="拍攝的證件照"><small id="card-meta" class="meta"></small></figure>
+      <figure><figcaption>② 人臉照</figcaption><img id="img-face" alt="拍攝的人臉照"><small id="face-meta" class="meta"></small></figure>
     </div>
     <div id="upload-mode" class="badge"></div>
     <div class="review-actions">
@@ -86,9 +89,14 @@
         <label>eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
         <label>Access Token（Authorization）<input name="token" type="password" autocomplete="off"></label>
         <label>platform-auth（選填）<input name="platformAuth" type="password" autocomplete="off"></label>
-        <label><input type="checkbox" name="doCompare" checked> 證件與人臉 1:1 比對（compare-boost/idcard）</label>
-        <label><input type="checkbox" name="doOcr"> 證件 OCR（idcard/ocr）</label>
-        <label><input type="checkbox" name="doSpoof"> 人臉活體檢查（face/spoofingcheck）</label>
+        <p class="note">實際上傳依序呼叫：</p>
+        <label><input type="checkbox" name="doSpoof" checked> ① 人臉活體檢查（face/spoofingcheck，送出整段人臉序列）</label>
+        <label class="sub"><input type="checkbox" name="strictMode"> enableStrictMode</label>
+        <label class="sub"><input type="checkbox" name="deepfake"> enableDeepfakeDetect</label>
+        <label><input type="checkbox" name="doOcr" checked> ② 證件 OCR（idcard/ocr，送出最清晰 3 張）</label>
+        <label class="sub"><input type="checkbox" name="imageDeskewed"> imageDeskewed（影像已校正）</label>
+        <label><input type="checkbox" name="doCompare" checked> ③ 證件與人臉 1:1 比對（compare-boost/idcard）</label>
+        <label><input type="checkbox" disabled> 證件偽造檢查（idcard/forgery）：需另拍 5 張正面＋2 張右側斜拍，尚未實作</label>
         <label><input type="checkbox" name="remember"> 記住在這台裝置（localStorage）</label>
         <p class="note">Token 不會寫進網址或程式碼。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
       </fieldset>
@@ -103,6 +111,6 @@
   </details>
   <p class="ver">版本 <span id="ver"></span> · 偵測在手機瀏覽器內執行</p>
 </footer>
-<script type="module" src="js/app.js?v=2026-11-11a"></script>
+<script type="module" src="js/app.js?v=2026-11-11b"></script>
 </body>
 </html>

@@ -3,12 +3,18 @@
 三步驟手機網頁：**① 自動拍證件 → ② 自動拍人臉 → ③ 確認／上傳**。iPhone Safari 為主要目標，Android Chrome 亦可。
 
 - 線上預覽：https://edwardyen307-collab.github.io/faceme-ekyc-web/
-- 版本：v2026-11-11a
+- 版本：v2026-11-11b
 
 ## 功能
 1. **證件**：後鏡頭，ID-1 證件框（85.6×54 mm 比例）。即時偵測證件四邊，條件全部符合才自動拍：證件填滿框（84–110%）、置中、轉正（傾斜 < 4.5°）、無大面積反光、清晰（Laplacian 變異數）、穩定 0.6 秒。即時提示：請把證件放進框內／再靠近一點／太近了／請把證件轉正／證件反光／畫面模糊／請拿穩／正在拍攝…
 2. **人臉**：自拍鏡頭，橢圓框。條件：只有一張臉、在框內、大小合適、正臉（yaw／pitch／roll）、眼睛張開、沒有遮蔽（口罩、手、墨鏡；啟發式）、亮度與清晰度足夠、保持不動 ≥ 0.5 秒。即時提示：請把臉移進橢圓框／靠近一點／退後一點／臉偏左了請往右移／頭往左轉一點／稍微低頭／請把頭擺正／臉部被遮住／光線太暗／請保持不動…
-3. **確認**：顯示兩張照片；「上傳」「重拍證件」「重拍人臉」。
+3. **確認**：顯示最清晰的證件照與人臉照；「上傳」「重拍證件」「重拍人臉」。
+
+v2026-11-11b 起：
+- 首頁可選證件種類（OCR `type`，預設國民身分證正面）。
+- 證件步驟保留最清晰的 3 張影格給 OCR。
+- 自拍步驟保留 10–15 張人臉序列（≈10 fps），靜止幀索引給活體檢查使用。
+- 實際上傳依序呼叫 spoofingcheck → ocr → compare，並把 needMoreImage、spoofing、400／403／503 轉成中文提示與重拍按鈕。
 
 12 秒內沒有自動拍成會出現「手動拍照」備援按鈕。
 
@@ -24,7 +30,7 @@
 
 ## 實際上傳（FaceMe eKYC Console）
 頁尾「進階設定（管理者）」→ 選「實際上傳」，填 Console 或代理網址；token 只存在記憶體（勾「記住」才存本機 localStorage），不進程式碼與網址。
-呼叫：`POST /api/platform/ekyc/face/compare-boost/idcard`（multipart `image1`=證件、`image2`=人臉），可選 OCR、活體。細節與已確認／推測項目見 [docs/API-NOTES.md](docs/API-NOTES.md)。
+依序呼叫：`face/spoofingcheck`（`img_stg1_act_1`×N、`detail`、`features`）→ `idcard/ocr`（`type`、`idCardImage`×3）→ `face/compare-boost/idcard`（`image1`、`image2`）。偽造檢查（`idcard/forgery`）需額外右側斜拍，尚未納入流程。細節與已確認／推測項目見 [docs/API-NOTES.md](docs/API-NOTES.md)。
 
 **CORS**：手機頁在 github.io，Console 通常不允許跨網域，且 token 不該放手機。建議跑 `proxy/ekyc-proxy.mjs`（token 放伺服器環境變數、只放行 eKYC 路徑與指定 Origin），並以 HTTPS 對外；頁面設定填代理網址、token 欄留空。
 

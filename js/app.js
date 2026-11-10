@@ -1,8 +1,8 @@
-import { APP_VERSION } from './version.js';
-import { Camera } from './camera.js';
-import { createEngine } from './engines/index.js';
-import { CARD_ASPECT } from './card-detector.js';
-import { loadConfig, saveConfig, uploadEkyc, summarizeCompare } from './upload.js';
+import { APP_VERSION } from './version.js?v=2026-11-11b';
+import { Camera } from './camera.js?v=2026-11-11b';
+import { createEngine } from './engines/index.js?v=2026-11-11b';
+import { CARD_ASPECT } from './card-detector.js?v=2026-11-11b';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES } from './upload.js?v=2026-11-11b';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -19,6 +19,7 @@ const engine = createEngine(params.get('engine') || 'opensource', { sdkUrl: para
 let cfg = loadConfig();
 
 // In-memory only. Object URLs are revoked whenever an image is replaced or reset.
+// card = { image, frames[], type }   face = { image, frames[], still, cameraInfo }
 const shots = { card: null, face: null, cardUrl: null, faceUrl: null };
 const state = { step: 'intro', retakeOnly: false, guide: null, kind: null, lastHint: '', lastHintAt: 0, manualTimer: 0 };
 const forceRef = { now: false };
@@ -26,6 +27,11 @@ window.__ekyc = { state, shots, version: APP_VERSION, events: [] };
 const log = (e) => { window.__ekyc.events.push({ t: Math.round(performance.now()), ...e }); };
 
 $('ver').textContent = APP_VERSION;
+const typeSel = $('card-type');
+for (const [v, label] of CARD_TYPES) { const o = document.createElement('option'); o.value = v; o.textContent = label + '（' + v + '）'; typeSel.appendChild(o); }
+typeSel.value = cfg.cardType || 'TW_ID_CARD_FRONT';
+typeSel.addEventListener('change', () => { cfg.cardType = typeSel.value; if (cfg.remember) saveConfig(cfg); });
+const typeLabel = () => (CARD_TYPES.find(t => t[0] === typeSel.value) || [, '證件'])[1];
 $('engine-label').textContent = '目前：' + engine.label;
 if (DEBUG) els.metrics.hidden = false;
 
@@ -122,26 +128,30 @@ async function runCapture(kind) {
   state.lastHint = '';
   els.hint.textContent = '準備相機中…';
   els.stage.dataset.state = 'loading';
-  els.stageTitle.textContent = kind === 'card' ? '步驟 1／3：拍攝證件正面（後鏡頭）' : '步驟 2／3：拍攝人臉（自拍鏡頭）';
+  els.stageTitle.textContent = kind === 'card' ? `步驟 1／3：拍攝${typeLabel()}（後鏡頭）` : '步驟 2／3：拍攝人臉（自拍鏡頭）';
   layoutGuide(kind);
   await camera.open(kind === 'card' ? 'environment' : 'user');
   layoutGuide(kind);
   log({ camera: camera.facing, w: els.video.videoWidth, h: els.video.videoHeight });
   state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS);
   const ctx = { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef };
-  const blob = kind === 'card' ? await engine.captureIdCard(ctx) : await engine.captureFace(ctx);
+  const raw = kind === 'card' ? await engine.captureIdCard(ctx) : await engine.captureFace(ctx);
   clearTimeout(state.manualTimer);
   flash();
-  log({ captured: kind, bytes: blob.size, manual: forceRef.now });
-  setShot(kind, blob);
+  // engines may return a bare Blob (e.g. FaceMe SDK adapter) or { image, frames, ... }
+  const shot = raw instanceof Blob ? { image: raw, frames: [raw], still: 0 } : raw;
+  if (kind === 'card') shot.type = typeSel.value;
+  if (kind === 'face' && !shot.cameraInfo) shot.cameraInfo = camera.info();
+  log({ captured: kind, bytes: shot.image.size, frames: shot.frames.length, still: shot.still, manual: forceRef.now });
+  setShot(kind, shot);
   await new Promise(r => setTimeout(r, 350));
-  return blob;
+  return shot;
 }
 
-function setShot(kind, blob) {
+function setShot(kind, shot) {
   const key = kind + 'Url';
   if (shots[key]) URL.revokeObjectURL(shots[key]);
-  shots[kind] = blob; shots[key] = URL.createObjectURL(blob);
+  shots[kind] = shot; shots[key] = URL.createObjectURL(shot.image);
 }
 
 async function flow(from) {
@@ -170,6 +180,8 @@ function showReview() {
   setStep('review');
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
+  $('card-meta').textContent = `${typeLabel()}・保留 ${shots.card.frames.length} 張供 OCR（顯示最清晰的一張）` + (shots.card.frames.length < 3 ? '。手動拍照只有 1 張，OCR 可能要求補拍，建議重拍讓系統自動拍。' : '');
+  $('face-meta').textContent = `活體序列 ${shots.face.frames.length} 張・靜止幀 #${shots.face.still}`;
   $('upload-result').hidden = true;
   $('btn-upload').disabled = false;
   renderMode();
@@ -195,36 +207,48 @@ $('btn-upload').addEventListener('click', async () => {
   const status = document.createElement('div'); out.appendChild(status);
   try {
     const r = await uploadEkyc(cfg, shots.card, shots.face, (s) => { status.textContent = s; });
-    log({ upload: r.mock ? 'mock' : 'real', ok: r.steps.every(s => s.ok) });
+    const allOk = r.steps.every(s => s.ok);
+    log({ upload: r.mock ? 'mock' : 'real', ok: allOk, steps: r.steps.map(s => ({ key: s.key, ok: s.ok, retake: s.retake })) });
+    let html = '';
     if (r.mock) {
-      out.innerHTML = `<div class="ok">✓ 模擬上傳完成</div><div>資料沒有離開這支手機（證件 ${kb(shots.card)}、人臉 ${kb(shots.face)}）。正式上線時改為「實際上傳」即可送到 FaceMe eKYC Console。</div>`;
+      html += `<div class="ok">✓ 模擬上傳完成</div><div>資料沒有離開這支手機。實際上傳時會依序呼叫：</div>`;
+      html += '<ol class="steps-list">' + r.steps.map(s => `<li>${esc(s.name)}</li>`).join('') + '</ol>';
+      html += `<div class="note">證件 ${shots.card.frames.length} 張（${kb(shots.card.frames)}）、人臉序列 ${shots.face.frames.length} 張（${kb(shots.face.frames)}）。</div>`;
     } else {
-      out.innerHTML = r.steps.map(s => {
-        let line = `<div class="${s.ok ? 'ok' : 'bad'}">${s.ok ? '✓' : '✗'} ${esc(s.name)}${s.error ? '：' + esc(s.error) : ''}</div>`;
-        if (s.ok && s.name.includes('比對')) { const c = summarizeCompare(s.data); line += `<div>isMatch：${esc(String(c.isMatch))}，similarity：${esc(String(c.similarity))}</div>`; }
-        if (s.data !== undefined) line += `<pre>${esc(JSON.stringify(s.data, null, 1)).slice(0, 2000)}</pre>`;
-        return line;
+      html += `<div class="${allOk ? 'ok' : 'bad'}">${allOk ? '✓ 驗證完成' : '✗ 驗證未通過，請依下方說明處理'}</div>`;
+      html += r.steps.map(s => {
+        let line = `<div class="step-res"><div class="${s.ok ? 'ok' : 'bad'}">${s.ok ? '✓' : '✗'} ${esc(s.name)}：${esc(s.verdict || s.error || '')}</div>`;
+        if (s.summary) line += `<div class="note">${esc(s.summary).slice(0, 600)}</div>`;
+        if (s.data !== undefined) line += `<details><summary>原始回應</summary><pre>${esc(JSON.stringify(s.data, null, 1)).slice(0, 3000)}</pre></details>`;
+        return line + '</div>';
       }).join('');
+      const retakes = [...new Set(r.steps.filter(s => s.retake).map(s => s.retake))];
+      if (retakes.length) {
+        html += '<div class="row retake-row">' + retakes.map(k => `<button class="btn primary" type="button" data-retake="${k}">${k === 'card' ? '重拍證件' : '重拍人臉'}</button>`).join('') + '</div>';
+      }
     }
+    out.innerHTML = html;
+    out.querySelectorAll('[data-retake]').forEach(b => b.addEventListener('click', () => $(b.dataset.retake === 'card' ? 'btn-retake-card' : 'btn-retake-face').click()));
   } catch (e) {
     out.innerHTML = `<div class="bad">✗ 上傳失敗：${esc(e.message)}</div>`;
   } finally { btn.disabled = false; }
 });
-function kb(b) { return b ? Math.round(b.size / 1024) + ' KB' : '-'; }
+function kb(list) { const n = (Array.isArray(list) ? list : [list]).reduce((a, b) => a + (b ? b.size : 0), 0); return Math.round(n / 1024) + ' KB'; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 // ---------- admin settings ----------
 const form = $('admin-form');
+const BOOL_KEYS = ['doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'remember'];
 function fillForm() {
   form.mode.value = cfg.mode;
   for (const k of ['baseUrl', 'token', 'platformAuth']) form[k].value = cfg[k] || '';
-  for (const k of ['doCompare', 'doOcr', 'doSpoof', 'remember']) form[k].checked = !!cfg[k];
+  for (const k of BOOL_KEYS) form[k].checked = !!cfg[k];
   $('real-fields').disabled = cfg.mode !== 'real';
 }
 form.addEventListener('change', () => { $('real-fields').disabled = form.mode.value !== 'real'; });
 $('btn-save-admin').addEventListener('click', () => {
-  cfg = { ...cfg, mode: form.mode.value, baseUrl: form.baseUrl.value.trim(), token: form.token.value.trim(), platformAuth: form.platformAuth.value.trim(),
-    doCompare: form.doCompare.checked, doOcr: form.doOcr.checked, doSpoof: form.doSpoof.checked, remember: form.remember.checked };
+  cfg = { ...cfg, mode: form.mode.value, baseUrl: form.baseUrl.value.trim(), token: form.token.value.trim(), platformAuth: form.platformAuth.value.trim(), cardType: typeSel.value };
+  for (const k of BOOL_KEYS) cfg[k] = form[k].checked;
   saveConfig(cfg); renderMode();
   const s = $('admin-saved'); s.hidden = false; setTimeout(() => { s.hidden = true; }, 1500);
 });

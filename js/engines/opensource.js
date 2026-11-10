@@ -1,8 +1,19 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
+// Results (v2026-11-11b):
+//   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
+//   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
+//                      face/spoofingcheck img_stg1_act_1), still: index of the still frame in frames,
+//                      cameraInfo: string }
 import { CardDetector } from '../card-detector.js';
 import { FaceChecker, loadLandmarker } from '../face-checker.js';
 
-const FRAME_MS = 70; // ~14 fps analysis
+const FRAME_MS = 70;          // ~14 fps analysis
+const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
+const CARD_GRAB_MS = 110;
+const SEQ_MAX = 15;           // spoofing stage-1 frames kept (ring buffer)
+const SEQ_MIN = 10;           // don't finish before this many frames are buffered (unless manual)
+const SEQ_GRAB_MS = 100;      // ~10 fps sequence
+const SEQ_MAX_W = 720;
 
 export class OpenSourceEngine {
   constructor() { this.id = 'opensource'; this.label = '開源引擎（瀏覽器端，MediaPipe + 自製證件框偵測）'; this._cancel = null; }
@@ -15,6 +26,13 @@ export class OpenSourceEngine {
   captureIdCard(ctx) {
     const det = new CardDetector(ctx.cardOptions || {});
     const canvas = document.createElement('canvas');
+    const cands = []; // {blob, sharp}
+    let lastGrab = 0;
+    const keep = (blob, sharp) => {
+      cands.push({ blob, sharp });
+      cands.sort((a, b) => b.sharp - a.sharp);
+      cands.length = Math.min(cands.length, CARD_KEEP);
+    };
     return this._loop(ctx, async (ts) => {
       const cam = ctx.camera;
       const g = cam.displayToVideo(ctx.getGuide());
@@ -26,9 +44,17 @@ export class OpenSourceEngine {
       let rectVideo = null;
       if (out.rect) rectVideo = { x: rr.x + out.rect.x / scale, y: rr.y + out.rect.y / scale, w: out.rect.w / scale, h: out.rect.h / scale };
       ctx.ui.update(out, rectVideo ? cam.videoToDisplay(rectVideo) : null);
+      // every frame that passes all checks (holding still) is a candidate for the OCR set
+      if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= CARD_GRAB_MS) {
+        lastGrab = ts;
+        keep(await cam.grab(pad(rectVideo, 0.04), 1600), out.metrics.sharp || 0);
+      }
       if (out.ready || ctx.forceRef.now) {
-        const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
-        return cam.grab(src, 1600);
+        if (!cands.length || ctx.forceRef.now) {
+          const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
+          keep(await cam.grab(src, 1600), ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0));
+        }
+        return { image: cands[0].blob, frames: cands.map(c => c.blob) };
       }
       return null;
     });
@@ -39,7 +65,8 @@ export class OpenSourceEngine {
     const lmk = await loadLandmarker();
     const checker = new FaceChecker(ctx.faceOptions || {});
     const canvas = document.createElement('canvas');
-    let lastVideoTs = -1;
+    let lastVideoTs = -1, lastSeq = 0;
+    const seq = []; // ring buffer of stage-1 frames (Blob)
     return this._loop(ctx, async (ts) => {
       const cam = ctx.camera, v = cam.video;
       if (!v.videoWidth) return null;
@@ -52,7 +79,23 @@ export class OpenSourceEngine {
       const oval = { cx: (o.x + o.w / 2) * scale, cy: (o.y + o.h / 2) * scale, rx: o.w / 2 * scale, ry: o.h / 2 * scale };
       const out = checker.analyze(res, img, oval, cam.mirrored, ts);
       ctx.ui.update(out, null, res);
-      if (out.ready || ctx.forceRef.now) return cam.grab(pad(o, 0.18), 1280);
+      const crop = pad(o, 0.18);
+      const nFaces = (res && res.faceLandmarks || []).length;
+      if (nFaces !== 1) seq.length = 0; // sequence must show the (one) face continuously
+      if (out.ready && !ctx.forceRef.now && seq.length < SEQ_MIN - 1) {
+        // quality is fine but the liveness sequence is still short: keep holding a little longer
+        ctx.ui.update({ ...out, state: 'hold', hint: '很好，請保持不動', ready: false, progress: 0.5 + 0.5 * seq.length / SEQ_MIN });
+      } else if (out.ready || ctx.forceRef.now) {
+        const image = await cam.grab(crop, 1280);
+        seq.push(await cam.grab(crop, SEQ_MAX_W));
+        while (seq.length > SEQ_MAX) seq.shift();
+        return { image, frames: seq.slice(), still: seq.length - 1, cameraInfo: cam.info() };
+      }
+      if (nFaces === 1 && ts - lastSeq >= SEQ_GRAB_MS) {
+        lastSeq = ts;
+        seq.push(await cam.grab(crop, SEQ_MAX_W, 0.85));
+        while (seq.length > SEQ_MAX - 1) seq.shift(); // leave room for the still frame
+      }
       return null;
     });
   }
@@ -66,8 +109,8 @@ export class OpenSourceEngine {
         if (!busy && ts - last >= FRAME_MS) {
           busy = true; last = ts;
           try {
-            const blob = await step(ts);
-            if (blob) { stopped = true; this._cancel = null; resolve(blob); return; }
+            const r = await step(ts);
+            if (r) { stopped = true; this._cancel = null; resolve(r); return; }
           } catch (e) { stopped = true; this._cancel = null; reject(e); return; }
           busy = false;
         }

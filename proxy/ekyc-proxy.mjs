@@ -14,7 +14,13 @@ const TOKEN = process.env.EKYC_TOKEN || '';
 const PLATFORM_AUTH = process.env.EKYC_PLATFORM_AUTH || '';
 const ORIGINS = (process.env.ALLOW_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
 const PORT = Number(process.env.PORT || 8787);
-const MAX_BYTES = 12 * 1024 * 1024;
+const MAX_BYTES = 30 * 1024 * 1024; // spoofing sends a ~15-frame sequence + OCR 3 frames
+// Multipart bodies are forwarded byte-for-byte, so every documented field passes through unchanged:
+//   spoofingcheck: img_stg1_act_1 (repeat), detail, features
+//   idcard/ocr:    type, idCardImage (repeat), imageDeskewed, enableBase64Encoding
+//   idcard/forgery: type, idCardImage (repeat), idCardDirections (repeat), idCardFullImage, imageDeskewed
+//   compare-boost/idcard: image1, image2
+// Authorization / platform-auth from the browser are ignored and replaced by the server-side values.
 const ALLOWED = new Set([
   '/api/platform/ekyc/face/compare-boost/idcard',
   '/api/platform/ekyc/idcard/ocr',
