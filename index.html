@@ -7,10 +7,18 @@
 <meta name="robots" content="noindex">
 <title>eKYC · FaceMe 預覽 v2026-11-11c</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11c">
+<link rel="stylesheet" href="styles.css?v=2026-11-11c2">
 </head>
 <body>
 <header class="top">
+  <div class="brand-row">
+    <span class="brand-logo"><img src="assets/fubon-logo.png" alt="台北富邦銀行" width="420" height="65"></span>
+    <span class="brand-tag" title="僅供內部同仁測試">內部測試</span>
+    <button id="btn-settings" class="gear" type="button" aria-label="開啟設定" aria-haspopup="dialog" aria-controls="settings">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.6 7.6 0 0 0-1.7-1L15 3.3h-4l-.4 2.6a7.6 7.6 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.4 2.6h4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5L19.4 13zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+      <span>設定</span>
+    </button>
+  </div>
   <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11c</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
@@ -50,7 +58,12 @@
         <path id="guide" class="guide"></path>
         <rect id="detected" class="detected" rx="10" ry="10"></rect>
       </svg>
-      <div id="hint" class="hint">準備相機中…</div>
+      <div id="banner" class="hint" role="status" aria-live="polite">
+        <span id="hint-icon" class="hint-icon" aria-hidden="true"></span>
+        <span id="hint" class="hint-text">準備相機中…</span>
+      </div>
+      <div id="shot-count" class="shot-count" hidden></div>
+      <div id="shot-guide" class="shot-guide" hidden></div>
       <div id="progress" class="progress"><i></i></div>
       <div id="flash" class="flash"></div>
       <div id="stage-title" class="stage-title"></div>
@@ -68,6 +81,11 @@
       <figure><figcaption>① 證件照</figcaption><img id="img-card" alt="拍攝的證件照"><small id="card-meta" class="meta"></small></figure>
       <figure><figcaption>② 人臉照</figcaption><img id="img-face" alt="拍攝的人臉照"><small id="face-meta" class="meta"></small></figure>
     </div>
+    <figure id="forgery-fig" class="forgery-fig" hidden>
+      <figcaption>③ 證件防偽影像</figcaption>
+      <div id="forgery-strip" class="strip"></div>
+      <small id="forgery-meta" class="meta"></small>
+    </figure>
     <div id="upload-mode" class="badge"></div>
     <div class="review-actions">
       <button id="btn-upload" class="btn primary big" type="button">上傳</button>
@@ -81,44 +99,56 @@
 </main>
 
 <footer>
-  <details id="admin">
-    <summary>進階設定（管理者）</summary>
+  <p class="ver">版本 <span id="ver"></span> · 偵測在手機瀏覽器內執行</p>
+  <p class="internal">僅供台北富邦銀行內部同仁測試使用，請勿對外散布。</p>
+</footer>
+
+<div id="settings" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="settings-h">
+    <div class="sheet-head">
+      <h2 id="settings-h">設定</h2>
+      <span id="admin-saved" class="saved" aria-live="polite"></span>
+      <button id="btn-settings-close" class="btn" type="button" data-close>完成</button>
+    </div>
     <form id="admin-form" autocomplete="off" onsubmit="return false">
+      <p class="note">變更會立即套用並記在這台裝置；Access Token 與 platform-auth 只放在記憶體，不會儲存。</p>
+      <fieldset>
+        <legend>證件防偽</legend>
+        <label class="chk"><input type="checkbox" name="doForgery"><span>證件防偽檢查（idcard/forgery，僅國民身分證正／背面）：拍完證件後，加拍 5 張正面＋2 張右上斜拍</span></label>
+      </fieldset>
       <fieldset>
         <legend>上傳方式</legend>
-        <label><input type="radio" name="mode" value="mock" checked> 模擬上傳（資料不離開手機）</label>
-        <label><input type="radio" name="mode" value="real"> 實際上傳到 FaceMe eKYC Console</label>
+        <label class="chk"><input type="radio" name="mode" value="mock" checked><span>模擬上傳（資料不離開手機）</span></label>
+        <label class="chk"><input type="radio" name="mode" value="real"><span>實際上傳到 FaceMe eKYC Console</span></label>
       </fieldset>
       <fieldset id="real-fields">
-        <label>eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
-        <label>Access Token（Authorization）<input name="token" type="password" autocomplete="off"></label>
-        <label>platform-auth（選填，固定值）<input name="platformAuth" type="password" autocomplete="off"></label>
-        <label><input type="checkbox" name="useRequest"> 先建立 eKYC 案件（/api/request/），用回傳的 platformToken 當 platform-auth</label>
-        <label class="sub">範本 UUID（requestTemplateUuid；經由代理時可留空）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
-        <p class="note">實際上傳依序呼叫：</p>
-        <label><input type="checkbox" name="doSpoof" checked> ① 人臉活體檢查（face/spoofingcheck，送出整段人臉序列）</label>
-        <label class="sub"><input type="checkbox" name="strictMode"> enableStrictMode（僅限 FaceMe Web SDK 引擎）</label>
-        <label class="sub"><input type="checkbox" name="deepfake"> enableDeepfakeDetect</label>
-        <label class="sub"><input type="checkbox" name="stillZeroBased"> still 從 0 起算（預設從 1 起算）</label>
-        <label><input type="checkbox" name="doOcr" checked> ② 證件 OCR（idcard/ocr，送出最清晰 3 張）</label>
-        <label class="sub"><input type="checkbox" name="imageDeskewed"> imageDeskewed（影像已校正）</label>
-        <label><input type="checkbox" name="doCompare" checked> ③ 證件與人臉 1:1 比對（compare-boost/idcard）</label>
-        <label class="sub"><input type="checkbox" name="idLargestFace" checked> 證件影像有多張臉時取最大（multipleFacePriority1=Largest）</label>
-        <label><input type="checkbox" disabled> 證件偽造檢查（idcard/forgery）：需另拍 5 張正面＋2 張右側斜拍，尚未實作</label>
-        <label><input type="checkbox" name="remember"> 記住在這台裝置（localStorage）</label>
-        <p class="note">Token 不會寫進網址或程式碼。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
+        <legend>實際上傳設定</legend>
+        <p id="real-note" class="note">下列設定只在「實際上傳」時使用。</p>
+        <label class="field">eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
+        <label class="field">Access Token（Authorization，不儲存）<input name="token" type="password" autocomplete="off"></label>
+        <label class="field">platform-auth（選填，固定值，不儲存）<input name="platformAuth" type="password" autocomplete="off"></label>
+        <label class="chk"><input type="checkbox" name="useRequest"><span>先建立 eKYC 案件（/api/request/），用回傳的 platformToken 當 platform-auth</span></label>
+        <label class="field sub">範本 UUID（requestTemplateUuid；經由代理時可留空）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
+        <p class="note">依序呼叫：</p>
+        <label class="chk"><input type="checkbox" name="doSpoof" checked><span>① 人臉活體檢查（face/spoofingcheck，送出整段人臉序列）</span></label>
+        <label class="chk sub"><input type="checkbox" name="strictMode"><span>enableStrictMode（僅限 FaceMe Web SDK 引擎）</span></label>
+        <label class="chk sub"><input type="checkbox" name="deepfake"><span>enableDeepfakeDetect</span></label>
+        <label class="chk sub"><input type="checkbox" name="stillZeroBased"><span>still 從 0 起算（預設從 1 起算）</span></label>
+        <label class="chk"><input type="checkbox" name="doOcr" checked><span>② 證件 OCR（idcard/ocr，送出最清晰 3 張）</span></label>
+        <label class="chk sub"><input type="checkbox" name="imageDeskewed"><span>imageDeskewed（影像已校正）</span></label>
+        <label class="chk"><input type="checkbox" name="doCompare" checked><span>③ 證件與人臉 1:1 比對（compare-boost/idcard）</span></label>
+        <label class="chk sub"><input type="checkbox" name="idLargestFace" checked><span>證件影像有多張臉時取最大（multipleFacePriority1=Largest）</span></label>
+        <p class="note">④ 證件防偽（idcard/forgery）在上方「證件防偽」開啟。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
       </fieldset>
       <fieldset>
         <legend>偵測引擎</legend>
         <p id="engine-label" class="note"></p>
         <p class="note">改用 FaceMe Web SDK：網址加 <code>?engine=faceme&amp;sdk=./sdk/faceme-web-sdk.js</code>（SDK 與模型檔需從 FaceMe Platform Central 另行取得，不在此 repo；.fmin 需以 application/octet-stream 提供）。</p>
       </fieldset>
-      <button id="btn-save-admin" class="btn" type="button">儲存設定</button>
-      <span id="admin-saved" class="note" hidden>已儲存</span>
     </form>
-  </details>
-  <p class="ver">版本 <span id="ver"></span> · 偵測在手機瀏覽器內執行</p>
-</footer>
-<script type="module" src="js/app.js?v=2026-11-11c"></script>
+  </div>
+</div>
+<script type="module" src="js/app.js?v=2026-11-11c2"></script>
 </body>
 </html>

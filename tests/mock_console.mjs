@@ -27,6 +27,15 @@ http.createServer((req, res) => {
       console.log(JSON.stringify({ createRequest: tpl, ctype: req.headers['content-type'] }));
       return send(200, { requestUuid: 'req-mock-0001', platformToken: 'pt-mock-per-request', ekycToken: 'ek-mock-should-be-stripped' });
     }
+    if (req.url.endsWith('/idcard/forgery/requirement')) {
+      const type = new URLSearchParams(body).get('type');
+      console.log(JSON.stringify({ forgeryRequirement: type, ctype: req.headers['content-type'], platformAuth: req.headers['platform-auth'] || null }));
+      return send(200, { imageCounts: { front: 5, rightSide: 2, full: 0 } });
+    }
+    if (req.url.endsWith('/idcard/forgery')) {
+      if (SC === 'errors') return send(200, { result: 'forgery', realScore: 0.08, rejectReason: 'screen recapture' });
+      return send(200, { result: 'real', realScore: 0.91, rejectReason: '' });
+    }
     if (req.url.endsWith('/face/spoofingcheck')) {
       if (SC === 'errors') return send(200, { result: 'spoofing', livenessScore: 0.12, clearImageIndex: 3 });
       return send(200, { result: 'liveness', livenessScore: 0.97, clearImageIndex: JSON.parse(values.detail || '{}')?.stg1_act_1?.still ?? 0, deepfakeDetectStatus: 'real', deepfakeDetectConfidence: 0.02 });

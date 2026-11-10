@@ -7,3 +7,7 @@
 
 All files are served from this site; nothing is loaded from a CDN at runtime.
 Test images in `tests/feeds/` are AI-generated synthetic people / a fake sample card, not real persons or documents.
+
+## 台北富邦銀行 logo
+`assets/fubon-logo.png` is the Taipei Fubon Bank logo downloaded unmodified from the bank's official website
+(https://www.fubon.com/banking/). Trademark of Taipei Fubon Commercial Bank; used here only for internal staff testing.

@@ -1,7 +1,8 @@
 // Selfie quality gate on top of MediaPipe Face Landmarker (Apache-2.0, vendored in /vendor).
 // Decides: one face, inside oval, size, frontal pose, eyes open, not occluded, bright, sharp,
 // held still >= holdMs. Occlusion is a colour/geometry heuristic (best effort, see README).
-import { toGray, laplacianVariance, patchYCbCr } from './imageops.js';
+import { Phraser } from './hints.js?v=2026-11-11c2';
+import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11c2';
 
 export const FACE_DEFAULTS = {
   minSize: 0.66, maxSize: 0.98,   // face width / oval width
@@ -49,11 +50,13 @@ export class FaceChecker {
   analyze(res, img, oval, mirrored, ts) {
     const o = this.o, W = img.width, H = img.height;
     const metrics = {};
-    const fail = (state, hint) => { this.holdSince = 0; return { state, hint, ready: false, metrics, progress: 0 }; };
+    if (!this.ph) this.ph = new Phraser();
+    const say = (k) => this.ph.say(k, ts);
+    const fail = (state, key) => { this.holdSince = 0; return { state, ...say(key), ready: false, metrics, progress: 0 }; };
     const faces = (res && res.faceLandmarks) || [];
     metrics.faces = faces.length;
-    if (faces.length === 0) return fail('noface', '請把臉移進橢圓框');
-    if (faces.length > 1) return fail('multi', '畫面中只能有一張臉');
+    if (faces.length === 0) return fail('noface', 'face.none');
+    if (faces.length > 1) return fail('multi', 'face.multi');
     const lm = faces[0];
     const P = i => ({ x: lm[i].x * W, y: lm[i].y * H });
     const sgn = mirrored ? -1 : 1; // display-space x direction
@@ -71,14 +74,14 @@ export class FaceChecker {
     for (const p of lm) { const x = p.x * W, y = p.y * H; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
     const outside = (minX < 0 || minY < 0 || maxX > W || maxY > H);
 
-    if (size < o.minSize * 0.75 && cdist > 0.6) return fail('position', '請把臉移進橢圓框');
+    if (size < o.minSize * 0.75 && cdist > 0.6) return fail('position', 'face.out');
     if (outside || cdist > o.maxCenter) {
       const ddx = dx * sgn; // display direction
-      if (Math.abs(ddx) >= Math.abs(dy)) return fail('position', ddx > 0 ? '臉偏右了，請往左移一點' : '臉偏左了，請往右移一點');
-      return fail('position', dy > 0 ? '臉偏下了，請把手機放低一點' : '臉偏上了，請把手機抬高一點');
+      if (Math.abs(ddx) >= Math.abs(dy)) return fail('position', ddx > 0 ? 'face.right' : 'face.left');
+      return fail('position', dy > 0 ? 'face.down' : 'face.up');
     }
-    if (size < o.minSize) return fail('far', '靠近一點');
-    if (size > o.maxSize) return fail('near', '退後一點');
+    if (size < o.minSize) return fail('far', 'face.far');
+    if (size > o.maxSize) return fail('near', 'face.near');
 
     // pose
     const ang = matrixAngles(res.facialTransformationMatrixes && res.facialTransformationMatrixes[0]);
@@ -93,14 +96,14 @@ export class FaceChecker {
     const pitchBad = ang ? Math.abs(ang.pitch) > o.maxPitch : (pitchR < o.pitchLo || pitchR > o.pitchHi);
     const rollBad = ang ? Math.abs(ang.roll) > o.maxRoll : Math.abs(rollDeg) > o.maxRoll;
     if (yawBad || Math.abs(yawR) > o.yawRatio * 1.6) {
-      if (Math.abs(yawR) > 0.02) return fail('yaw', yawR > 0 ? '請正面看鏡頭，頭往左轉一點' : '請正面看鏡頭，頭往右轉一點');
-      return fail('yaw', '請正面看鏡頭');
+      if (Math.abs(yawR) > 0.02) return fail('yaw', yawR > 0 ? 'face.turnLeft' : 'face.turnRight');
+      return fail('yaw', 'face.front');
     }
     if (pitchBad) {
-      if (pitchR < o.pitchNeutral) return fail('pitch', '請正面看鏡頭，稍微低頭一點');
-      return fail('pitch', '請正面看鏡頭，稍微抬頭一點');
+      if (pitchR < o.pitchNeutral) return fail('pitch', 'face.chinDown');
+      return fail('pitch', 'face.chinUp');
     }
-    if (rollBad) return fail('roll', '請把頭擺正，不要歪頭');
+    if (rollBad) return fail('roll', 'face.roll');
 
     // eyes open
     const cats = res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories;
@@ -122,18 +125,18 @@ export class FaceChecker {
     const lipCr = lip.Cr - skin.Cr;
     const eyeL = Math.max(...eyes.map(e => e.Y / Math.max(1, skin.Y)));
     Object.assign(metrics, { skinY: +skin.Y.toFixed(0), chroma: +chroma.toFixed(1), lumaR: +lumaR.toFixed(2), lipCr: +lipCr.toFixed(1), eyeL: +eyeL.toFixed(2) });
-    if (skin.Y < o.minLuma) return fail('dark', '光線太暗，請面向光源');
-    if (skin.Y > o.maxLuma) return fail('bright', '光線太亮，請避開強光');
-    if (eyeL < o.minEyeLuma) return fail('occluded', '眼睛被遮住，請摘下墨鏡或撥開頭髮');
-    if (chroma > o.maskChroma || lumaR < o.maskLumaLo || lumaRmax > o.maskLumaHi) return fail('occluded', '臉部被遮住，請拿下口罩或移開遮蔽物');
-    if (lipCr < o.minLipCr) return fail('occluded', '嘴巴被遮住，請移開手或遮蔽物');
-    if (blink > o.maxBlink) return fail('eyes', '請張開眼睛');
+    if (skin.Y < o.minLuma) return fail('dark', 'face.dark');
+    if (skin.Y > o.maxLuma) return fail('bright', 'face.bright');
+    if (eyeL < o.minEyeLuma) return fail('occluded', 'face.eyesCovered');
+    if (chroma > o.maskChroma || lumaR < o.maskLumaLo || lumaRmax > o.maskLumaHi) return fail('occluded', 'face.occluded');
+    if (lipCr < o.minLipCr) return fail('occluded', 'face.mouth');
+    if (blink > o.maxBlink) return fail('eyes', 'face.eyes');
 
     // sharpness on the face box
     const gray = toGray(img);
     const sharp = laplacianVariance(gray, W, H, lc.x + faceW * 0.1, top.y + (chin.y - top.y) * 0.2, rc.x - faceW * 0.1, chin.y - (chin.y - top.y) * 0.1);
     metrics.sharp = +sharp.toFixed(0);
-    if (sharp < o.minSharpness) return fail('blur', '畫面模糊，請拿穩手機');
+    if (sharp < o.minSharpness) return fail('blur', 'face.blur');
 
     // stillness
     const cur = { x: nose.x, y: nose.y, w: faceW };
@@ -141,11 +144,11 @@ export class FaceChecker {
     if (this.prev) move = Math.max(Math.abs(cur.x - this.prev.x), Math.abs(cur.y - this.prev.y), Math.abs(cur.w - this.prev.w)) / faceW;
     this.prev = cur;
     metrics.move = +move.toFixed(3);
-    if (move > o.maxMove) { this.holdSince = 0; return { state: 'moving', hint: '請保持不動', ready: false, metrics, progress: 0 }; }
+    if (move > o.maxMove) { this.holdSince = 0; return { state: 'moving', ...say('face.moving'), ready: false, metrics, progress: 0 }; }
     if (!this.holdSince) this.holdSince = ts;
     const held = ts - this.holdSince;
-    if (held >= o.holdMs) return { state: 'capture', hint: '正在拍攝…', ready: true, metrics, progress: 1 };
-    return { state: 'hold', hint: '很好，請保持不動', ready: false, metrics, progress: held / o.holdMs };
+    if (held >= o.holdMs) return { state: 'capture', ...say('face.capture'), ready: true, metrics, progress: 1 };
+    return { state: 'hold', ...say('face.hold'), ready: false, metrics, progress: held / o.holdMs };
   }
 }
 

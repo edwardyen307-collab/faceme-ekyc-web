@@ -30,7 +30,10 @@ with sync_playwright() as p:
     b = p.chromium.launch(executable_path='/opt/google/chrome/chrome', headless=True, args=['--autoplay-policy=no-user-gesture-required'])
     page = b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, is_mobile=True, has_touch=True).new_page()
     page.add_init_script(INIT)
-    page.route('**/__feeds/*.webm', lambda r: r.fulfill(path=os.path.join(OUT, r.request.url.split('/')[-1]), content_type='video/webm'))
+    FEEDMAP = {'card.webm': os.environ.get('FEED_CARD', 'card') + '.webm', 'face.webm': os.environ.get('FEED_FACE', 'face') + '.webm'}
+    page.route('**/__feeds/*.webm', lambda r: r.fulfill(path=os.path.join(OUT, FEEDMAP.get(r.request.url.split('/')[-1], 'card.webm')), content_type='video/webm'))
+    if not REAL and EXTRA:
+        page.add_init_script('localStorage.setItem("ekyc-upload-config-v1", JSON.stringify(%s))' % json.dumps(EXTRA))
     if REAL:
         page.add_init_script('localStorage.setItem("ekyc-upload-config-v1", JSON.stringify(Object.assign({mode:"real",baseUrl:%s,token:"",remember:true}, %s)))' % (json.dumps(REAL), json.dumps(EXTRA)))
     page.on('pageerror', lambda e: print('[pageerror]', e))
@@ -39,7 +42,7 @@ with sync_playwright() as p:
     if CTYPE: page.select_option('#card-type', CTYPE)
     page.click('#btn-start')
     t0 = time.time()
-    while time.time() - t0 < 60 and page.evaluate("window.__ekyc.state.step") != 'review':
+    while time.time() - t0 < float(os.environ.get('FLOW_TIMEOUT', '60')) and page.evaluate("window.__ekyc.state.step") != 'review':
         time.sleep(0.3)
     time.sleep(0.6)
     ev = page.evaluate('window.__ekyc.events')
@@ -49,9 +52,14 @@ with sync_playwright() as p:
     res['cameraInfo'] = page.evaluate('window.__ekyc.shots.face.cameraInfo')
     res['face_detail'] = page.evaluate('window.__ekyc.shots.face.detail || null')
     res['sdk_calls'] = page.evaluate('window.FaceMe && window.FaceMe.__calls ? JSON.stringify(window.FaceMe.__calls) : null')
+    res['forgery_events'] = [e for e in ev if 'forgeryShot' in e or 'forgeryRequirement' in e]
+    res['forgery_meta'] = page.inner_text('#forgery-meta') if page.is_visible('#forgery-fig') else None
+    res['card_capture_ms'] = next((e['t'] for e in ev if e.get('captured') == 'card'), None)
+    res['hint_levels'] = sorted({(e.get('level') or '') + ':' + (e.get('dir') or '') for e in ev if 'hint' in e})
+    res['hints'] = [e['hint'] for e in ev if 'hint' in e][:40]
     page.screenshot(path=SHOT + 'review.png')
     page.click('#btn-upload')
-    page.wait_for_function("!document.getElementById('btn-upload').disabled && document.getElementById('upload-result').textContent.length > 20", timeout=30000)
+    page.wait_for_function("!document.getElementById('btn-upload').disabled && document.getElementById('upload-result').textContent.length > 20", timeout=60000)
     res['upload_text'] = page.inner_text('#upload-result')
     res['upload_event'] = [e for e in page.evaluate('window.__ekyc.events') if 'upload' in e]
     res['retake_buttons'] = page.eval_on_selector_all('#upload-result [data-retake]', 'els => els.map(e => e.textContent)')

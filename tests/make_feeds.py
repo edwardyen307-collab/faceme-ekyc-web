@@ -55,7 +55,7 @@ def write(frames, name):
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', str(FPS), '-i',
                     os.path.join(tmp, '%04d.png'), '-pix_fmt', 'yuv420p', out], check=True)
     print('wrote', out)
-    if name in ('card', 'face'):  # webm copies for tests/e2e_fullflow.py
+    if True:  # webm copies for tests/e2e_fullflow.py
         od = os.path.join(HERE, 'out'); os.makedirs(od, exist_ok=True)
         subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-framerate', str(FPS), '-i',
                         os.path.join(tmp, '%04d.png'), '-c:v', 'libvpx', '-b:v', '2M', os.path.join(od, name + '.webm')], check=True)
@@ -82,6 +82,50 @@ def card_feed():
         frames.append(f)
     write(frames, 'card')
 
+def place(bg, card, mask, wpx, cx, cy):
+    hpx = int(wpx * 540 / 856)
+    f = bg.copy()
+    f.paste(card.resize((wpx, hpx), Image.LANCZOS), (cx - wpx // 2, cy - hpx // 2), mask.resize((wpx, hpx)))
+    return f
+
+def card_shaky_feed(amp=7, n=120):
+    """Hand-held tremor: card jitters a few px every frame (plus an occasional bigger jerk)."""
+    card, mask = make_card(); bg = background(); rnd = random.Random(7)
+    frames = []
+    for i in range(n):
+        jx, jy = rnd.randint(-amp, amp), rnd.randint(-amp, amp)
+        if i % 37 == 0: jx += 14
+        frames.append(place(bg, card, mask, 450 + rnd.randint(-4, 4), W // 2 + jx, int(H * 0.42) + jy))
+    write(frames, 'card-shaky')
+
+def perspective_coeffs(src, dst):
+    import numpy as np
+    A = []; B = []
+    for (x, y), (u, v) in zip(dst, src):
+        A.append([x, y, 1, 0, 0, 0, -u * x, -u * y]); B.append(u)
+        A.append([0, 0, 0, x, y, 1, -v * x, -v * y]); B.append(v)
+    return np.linalg.solve(np.array(A, float), np.array(B, float)).tolist()
+
+def card_oblique(card, mask, wpx):
+    """Card seen from the upper right (~25 deg): right edge nearer (taller), left edge shorter, slight rotation."""
+    hpx = int(wpx * 540 / 856)
+    c = card.resize((wpx, hpx), Image.LANCZOS); m = mask.resize((wpx, hpx))
+    pad = 40; Wc, Hc = wpx + 2 * pad, hpx + 2 * pad
+    src = [(0, 0), (wpx, 0), (wpx, hpx), (0, hpx)]
+    shrink = 0.16 * hpx
+    dst = [(pad + 0.06 * wpx, pad + shrink), (pad + wpx, pad - 0.02 * hpx), (pad + wpx * 0.98, pad + hpx + 0.04 * hpx), (pad + 0.04 * wpx, pad + hpx - shrink * 0.6)]
+    co = perspective_coeffs(src, dst)
+    return c.transform((Wc, Hc), Image.PERSPECTIVE, co, Image.BICUBIC), m.transform((Wc, Hc), Image.PERSPECTIVE, co, Image.BICUBIC)
+
+def card_forgery_feed():
+    """~7 s front (still) then ~5 s oblique from the upper right; loops in the test."""
+    card, mask = make_card(); bg = background()
+    frames = [place(bg, card, mask, 450, W // 2, int(H * 0.42)) for _ in range(105)]
+    oc, om = card_oblique(card, mask, 430)
+    for i in range(75):
+        f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, int(H * 0.42) - oc.height // 2), om); frames.append(f)
+    write(frames, 'card-forgery')
+
 def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     img = Image.open(os.path.join(HERE, 'feeds', src)).convert('RGB')
     if zoom != 1.0:  # zoom<1: face smaller (user too far) - pad with wall colour
@@ -104,7 +148,11 @@ def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     write(frames, name)
 
 if __name__ == '__main__':
+    if len(sys.argv) > 2 and sys.argv[2] == 'new':
+        card_shaky_feed(); card_forgery_feed(); sys.exit()
     card_feed()
+    card_shaky_feed()
+    card_forgery_feed()
     face_feed('face.jpg', 'face')
     face_feed('face-mask.jpg', 'face-mask')
     face_feed('face.jpg', 'face-offset', shift_x=150, n=30)   # face to the right of the raw frame

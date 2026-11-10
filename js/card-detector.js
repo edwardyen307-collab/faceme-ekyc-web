@@ -2,7 +2,8 @@
 // Finds the four straight borders of a card-shaped object around the on-screen guide
 // using Sobel edge projection profiles, then checks fill, alignment, aspect ratio,
 // glare, darkness and sharpness. Works on a downscaled RGBA ImageData.
-import { toGray, laplacianVariance, lumaStats, meanAbsDiff } from './imageops.js';
+import { toGray, laplacianVariance, lumaStats, meanAbsDiff } from './imageops.js?v=2026-11-11c2';
+import { Phraser } from './hints.js?v=2026-11-11c2';
 
 export const CARD_ASPECT = 85.6 / 53.98; // ISO/IEC 7810 ID-1 (Taiwan ID card, driver licence, health card)
 
@@ -18,9 +19,19 @@ export const CARD_DEFAULTS = {
   maxGlare: 0.025,      // fraction of near-white pixels inside card
   minLuma: 55,
   minSharpness: 55,     // Laplacian variance at analysis resolution
-  steadyMs: 600,
-  steadyRectTol: 0.025, // side movement / guide width per frame
-  steadyDiffTol: 7,     // mean abs gray diff per frame
+  steadyMs: 450,        // hold time before capture (was 600)
+  steadyRectTol: 0.045, // max side deviation from the recent average / guide width (was 0.025 frame-to-frame)
+  steadyDiffTol: 22,    // gross-motion guard only: median mean-abs gray diff over the last 3 frames (was 7, single frame).
+                        // Fine stability comes from the averaged border positions; blur is caught by minSharpness.
+  steadyWindow: 5,      // frames averaged for the steadiness reference (~0.35 s)
+  graceMs: 300,         // a brief glitch (one bad frame) does not restart the hold timer
+  mode: 'front',        // 'front' | 'rightSide' (forgery: card shot obliquely from the upper right)
+};
+
+// Oblique shot used by idcard/forgery (direction "rightSide").
+export const CARD_RIGHTSIDE = {
+  mode: 'rightSide', minFill: 0.55, maxFill: 1.15, maxCenterOffset: 0.16, aspectMin: 0.95, aspectMax: 2.7,
+  maxTiltDeg: 45, minSkewDeg: 3, minSkewAspect: 0.12, steadyMs: 400,
 };
 
 function sobel(gray, w, h) {
@@ -114,6 +125,7 @@ export class CardDetector {
   }
   reset() {
     this.prevRect = null; this.prevGray = null; this.steadySince = 0; this.lastTs = 0;
+    this.hist = []; this.diffs = []; this.lastGood = 0; this.ph = new Phraser();
   }
   /**
    * @param {ImageData} img analysis frame
@@ -139,69 +151,88 @@ export class CardDetector {
     const sides = [top, bot, lef, rig];
     const found = sides.filter(s => s && s.ok).length;
     const metrics = { found, edges: sides.map(s => s ? +s.strength.toFixed(1) : 0) };
-    const diff = meanAbsDiff(gray, this.prevGray);
+    const diff1 = meanAbsDiff(gray, this.prevGray);
     this.prevGray = gray;
+    this.diffs.push(diff1); if (this.diffs.length > 3) this.diffs.shift();
+    const diff = [...this.diffs].sort((a, b) => a - b)[this.diffs.length >> 1];
     metrics.diff = +diff.toFixed(1);
+    const rs = o.mode === 'rightSide';
+    const K = (k) => (rs && ['card.search', 'card.partial', 'card.near', 'card.small', 'card.flat'].includes(k) ? k.replace('card.', 'card.rs.').replace('rs.partial', 'rs.search') : k);
+    const say = (k) => this.ph.say(K(k), ts);
 
-    const fail = (state, hint, rect) => { this.steadySince = 0; this.prevRect = rect || null; return { state, hint, ready: false, rect, metrics, progress: 0 }; };
+    const fail = (state, key, rect) => {
+      if (ts - this.lastGood > o.graceMs) { this.steadySince = 0; this.hist = []; }
+      this.prevRect = rect || null;
+      return { state, ...say(key), ready: false, rect, metrics, progress: 0 };
+    };
 
     // overall darkness (whole guide area)
     const g = lumaStats(gray, w, h, L, T, R, B);
     metrics.luma = +g.mean.toFixed(0);
-    if (g.mean < o.minLuma) return fail('dark', '光線太暗，請到明亮的地方');
-    if (found < 3) return fail('search', '請把證件放進框內');
+    if (g.mean < o.minLuma) return fail('dark', 'card.dark');
+    if (found < 3) return fail('search', 'card.search');
 
     const rect = { x: lef.ok ? lef.pos : L, y: top.ok ? top.pos : T, x2: rig.ok ? rig.pos : R, y2: bot.ok ? bot.pos : B };
     rect.w = rect.x2 - rect.x; rect.h = rect.y2 - rect.y;
-    if (rect.w < gw * 0.3 || rect.h < gh * 0.3) return fail('search', '請把證件放進框內');
+    if (rect.w < gw * 0.3 || rect.h < gh * 0.3) return fail('search', 'card.search');
     const fill = rect.w / gw;
     const aspect = rect.w / rect.h;
     const offX = ((rect.x + rect.x2) / 2 - (L + R) / 2) / gw;
     const offY = ((rect.y + rect.y2) / 2 - (T + B) / 2) / gw;
     Object.assign(metrics, { fill: +fill.toFixed(2), aspect: +aspect.toFixed(2), offX: +offX.toFixed(2), offY: +offY.toFixed(2) });
 
-    if (found < 4) {
+    if (found < 4 && !rs) {
       // one border missing: usually because the card is cut off by the frame edge (too close) or too small
-      if (sides.some(s => s && s.ok && s.atLimit) || fill > o.maxFill) return fail('near', '太近了，請把手機拿遠一點', rect);
-      return fail('search', '請把證件完整放進框內', rect);
+      if (sides.some(s => s && s.ok && s.atLimit) || fill > o.maxFill) return fail('near', 'card.near', rect);
+      return fail('search', 'card.partial', rect);
     }
-    if (fill > o.maxFill || sides.some(s => s.atLimit && s.strength > o.minEdge)) return fail('near', '太近了，請把手機拿遠一點', rect);
-    if (fill < o.minFill) return fail('small', '再靠近一點，讓證件填滿框線', rect);
-    if (aspect < o.aspectMin || aspect > o.aspectMax) return fail('tilt', '請把證件放平，與框線對齊', rect);
+    if (fill > o.maxFill || sides.some(s => s && s.atLimit && s.strength > o.minEdge)) return fail('near', 'card.near', rect);
+    if (fill < o.minFill) return fail('small', 'card.small', rect);
+    if (aspect < o.aspectMin || aspect > o.aspectMax) return fail('tilt', 'card.flat', rect);
     if (Math.abs(offX) > o.maxCenterOffset || Math.abs(offY) > o.maxCenterOffset) {
-      return fail('offset', '請把證件移到框線中央', rect);
+      // card right of centre in the (unmirrored) rear preview -> move the phone right, etc.
+      if (Math.abs(offX) >= Math.abs(offY)) return fail('offset', offX > 0 ? 'card.right' : 'card.left', rect);
+      return fail('offset', offY > 0 ? 'card.down' : 'card.up', rect);
     }
     const inset = 0.06;
     const ix0 = rect.x + rect.w * inset, iy0 = rect.y + rect.h * inset, ix1 = rect.x2 - rect.w * inset, iy1 = rect.y2 - rect.h * inset;
     const st = lumaStats(gray, w, h, ix0, iy0, ix1, iy1);
     metrics.glare = +st.whiteFrac.toFixed(3);
-    if (st.whiteFrac > o.maxGlare) return fail('glare', '證件反光，請稍微傾斜調整角度', rect);
+    if (st.whiteFrac > o.maxGlare) return fail('glare', 'card.glare', rect);
     const sharp = laplacianVariance(gray, w, h, ix0, iy0, ix1, iy1);
     metrics.sharp = +sharp.toFixed(0);
-    if (sharp < o.minSharpness) return fail('blur', '畫面模糊，請拿穩讓鏡頭對焦', rect);
+    if (sharp < o.minSharpness) return fail('blur', 'card.blur', rect);
     // tilt: slope of the top/bottom and left/right borders
-    const tilt = Math.max(
-      Math.abs(borderSlopeDeg(gy, w, h, true, top, L + 0.05 * gw, R - 0.05 * gw, 0.10 * gh)),
-      Math.abs(borderSlopeDeg(gy, w, h, true, bot, L + 0.05 * gw, R - 0.05 * gw, 0.10 * gh)),
-      Math.abs(borderSlopeDeg(gx, w, h, false, lef, T + 0.08 * gh, B - 0.08 * gh, 0.10 * gh)),
-      Math.abs(borderSlopeDeg(gx, w, h, false, rig, T + 0.08 * gh, B - 0.08 * gh, 0.10 * gh)));
+    const sl = (side, horiz) => side && side.ok ? Math.abs(horiz
+      ? borderSlopeDeg(gy, w, h, true, side, L + 0.05 * gw, R - 0.05 * gw, (rs ? 0.2 : 0.10) * gh)
+      : borderSlopeDeg(gx, w, h, false, side, T + 0.08 * gh, B - 0.08 * gh, (rs ? 0.2 : 0.10) * gh)) : 0;
+    const tilt = Math.max(sl(top, true), sl(bot, true), sl(lef, false), sl(rig, false));
     metrics.tilt = +tilt.toFixed(1);
-    if (tilt > o.maxTiltDeg) return fail('tilt', '請把證件轉正，與框線對齊', rect);
+    if (rs) {
+      // must really be oblique: slanted borders or a clearly non-ID-1 apparent aspect
+      if (tilt < o.minSkewDeg && Math.abs(aspect - CARD_ASPECT) < o.minSkewAspect) return fail('tilt', 'card.flat', rect);
+    } else if (tilt > o.maxTiltDeg) return fail('tilt', 'card.rotate', rect);
 
-    // steadiness
-    let moved = true;
-    if (this.prevRect && this.prevRect.x2 !== undefined) {
-      const d = Math.max(Math.abs(rect.x - this.prevRect.x), Math.abs(rect.x2 - this.prevRect.x2),
-        Math.abs(rect.y - this.prevRect.y), Math.abs(rect.y2 - this.prevRect.y2)) / gw;
+    // steadiness: compare with the average of the last few accepted rects (smooths detector jitter)
+    this.lastGood = ts;
+    let moved = false;
+    if (this.hist.length) {
+      const n = this.hist.length, avg = { x: 0, x2: 0, y: 0, y2: 0 };
+      for (const r of this.hist) { avg.x += r.x / n; avg.x2 += r.x2 / n; avg.y += r.y / n; avg.y2 += r.y2 / n; }
+      const d = Math.max(Math.abs(rect.x - avg.x), Math.abs(rect.x2 - avg.x2), Math.abs(rect.y - avg.y), Math.abs(rect.y2 - avg.y2)) / gw;
       metrics.move = +d.toFixed(3);
       moved = d > o.steadyRectTol || diff > o.steadyDiffTol;
-    }
+    } else moved = diff > o.steadyDiffTol;
+    this.hist.push(rect); if (this.hist.length > o.steadyWindow) this.hist.shift();
     this.prevRect = rect;
-    if (moved) { this.steadySince = 0; return { state: 'steady', hint: '請拿穩，不要晃動', ready: false, rect, metrics, progress: 0 }; }
+    if (moved) {
+      this.steadySince = 0;
+      return { state: 'steady', ...say('card.steady'), ready: false, rect, metrics, progress: 0 };
+    }
     if (!this.steadySince) this.steadySince = ts;
     const held = ts - this.steadySince;
     const progress = Math.min(1, held / o.steadyMs);
-    if (held >= o.steadyMs) return { state: 'capture', hint: '正在拍攝…', ready: true, rect, metrics, progress: 1 };
-    return { state: 'hold', hint: '很好，請保持不動', ready: false, rect, metrics, progress };
+    if (held >= o.steadyMs) return { state: 'capture', ...say('card.capture'), ready: true, rect, metrics, progress: 1 };
+    return { state: 'hold', ...say('card.hold'), ready: false, rect, metrics, progress };
   }
 }

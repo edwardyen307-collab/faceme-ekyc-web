@@ -15,7 +15,7 @@ not part of this repository; ask your FaceMe contact for them.
 | `POST /api/platform/ekyc/idcard/ocr` | `type`, `idCardImage` ×N (≥3 recommended), `imageDeskewed` (opt.), `enableBase64Encoding` (opt.) | `result` ok/needMoreImage + info fields (may also be a flat info object) |
 | `POST /api/platform/ekyc/face/compare-boost/idcard` | `image1` (ID), `image2` (face), `image1Info`/`image2Info`, `multipleFacePriority1/2` (Not Allowed/Largest/Rightmost/Leftmost), `enableAutoRotate` (all opt.) | `thresholds.idcard`, `isMatch`, `similarity`, `faceInfo`, `face2Info`, `rotatedImage1/2` |
 | `POST /api/platform/ekyc/idcard/forgery/requirement` (urlencoded) | `type` | `imageCounts{front, rightSide, full}` |
-| `POST /api/platform/ekyc/idcard/forgery` (not in default flow) | `type`, `idCardImage` ×N, `idCardDirections` ×N (front/rightSide), `idCardFullImage` ×N (opt.), `imageDeskewed` | `result` real/forgery/unknown, `realScore`, `rejectReason` |
+| `POST /api/platform/ekyc/idcard/forgery` (optional, TW ID front/back) | `type`, `idCardImage` ×N, `idCardDirections` ×N (front/rightSide), `idCardFullImage` ×N (opt.), `imageDeskewed` | `result` real/forgery/unknown, `realScore`, `rejectReason` |
 
 Notes
 - `detail` should come from the FaceMe Web SDK; `enableStrictMode` only works with the SDK (web component). The own engine sends a best-effort `detail` (still index 1-based by default, switchable).

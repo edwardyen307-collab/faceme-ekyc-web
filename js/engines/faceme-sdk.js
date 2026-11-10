@@ -118,6 +118,12 @@ export class FaceMeSdkEngine {
   }
   _hintStyle() { return { fontSize: '18px', color: '#ffffff', fontFamily: '-apple-system, "PingFang TC", "Noto Sans TC", sans-serif' }; }
 
+  /** Forgery shots (front / rightSide) use the built-in detector. */
+  captureCardShot(ctx) {
+    if (!this.fallback) throw new Error('需要預設引擎來拍攝防偽影像');
+    return this.fallback.captureIdCard(ctx);
+  }
+
   /** ctx.cardType = eKYC OCR type. Returns { image, frames[], scores[] }. */
   async captureIdCard(ctx) {
     const step = ID_CARD_STEP[ctx.cardType];

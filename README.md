@@ -6,7 +6,7 @@
 - 版本：v2026-11-11c
 
 ## 功能
-1. **證件**：後鏡頭，ID-1 證件框（85.6×54 mm 比例）。即時偵測證件四邊，條件全部符合才自動拍：證件填滿框（84–110%）、置中、轉正（傾斜 < 4.5°）、無大面積反光、清晰（Laplacian 變異數）、穩定 0.6 秒。即時提示：請把證件放進框內／再靠近一點／太近了／請把證件轉正／證件反光／畫面模糊／請拿穩／正在拍攝…
+1. **證件**：後鏡頭，ID-1 證件框（85.6×54 mm 比例）。即時偵測證件四邊，條件全部符合才自動拍：證件填滿框（84–110%）、置中、轉正（傾斜 < 4.5°）、無大面積反光、清晰（Laplacian 變異數）、穩定 0.45 秒（多幀平滑）。即時提示：請把證件放進框內／再靠近一點／太近了／請把證件轉正／證件反光／畫面模糊／請拿穩／正在拍攝…
 2. **人臉**：自拍鏡頭，橢圓框。條件：只有一張臉、在框內、大小合適、正臉（yaw／pitch／roll）、眼睛張開、沒有遮蔽（口罩、手、墨鏡；啟發式）、亮度與清晰度足夠、保持不動 ≥ 0.5 秒。即時提示：請把臉移進橢圓框／靠近一點／退後一點／臉偏左了請往右移／頭往左轉一點／稍微低頭／請把頭擺正／臉部被遮住／光線太暗／請保持不動…
 3. **確認**：顯示最清晰的證件照與人臉照；「上傳」「重拍證件」「重拍人臉」。
 
@@ -22,6 +22,11 @@ v2026-11-11c 起：
 - OCR 支援扁平回應並以中文欄位名顯示；比對顯示門檻；證件影像多臉時取最大（可關）。
 - 錯誤訊息對照擴充（模糊、反光、裁切、口罩、多臉、權杖、授權、429 等）。
 - `enableStrictMode` 只在 FaceMe SDK 引擎開放；自製引擎的 `still` 預設從 1 起算（可切換）；`cameraInfo` 改為相機名稱。
+- 標頭加上台北富邦銀行 logo（取自富邦官網，存於 `assets/fubon-logo.png`）與「內部測試」標示；僅供內部同仁測試。
+- 右上角「設定」按鈕在三個步驟都能開啟設定面板；變更立即套用並存在本機（Access Token、platform-auth 只放記憶體，不儲存）。修正設定面板勾選框在模擬模式被整組停用、點不動的問題。
+- 證件穩定判斷放寬：以最近 5 幀的平均邊框位置判斷晃動（容許 4.5%），畫面差異只擋大幅移動，保持 0.45 秒即拍；單幀誤判有 0.3 秒緩衝；清晰度檢查保留。
+- 證件防偽（僅國民身分證正／背面，設定中開啟）：拍完證件後引導加拍 5 張正面＋2 張右上斜拍（張數優先取自 Forgery Requirements API），顯示「第 3/5 張」進度，上傳時呼叫 `idcard/forgery`（帶 `idCardDirections`），結果顯示在確認頁。
+- 提示更醒目、更多樣：大字橫幅依狀態變色（紅＝問題、黃＝調整、綠＝保持／拍攝中），附方向箭頭與輕微動畫；同一問題持續時會換句話說；拍照時支援的裝置會震動。
 
 12 秒內沒有自動拍成會出現「手動拍照」備援按鈕。
 
@@ -36,7 +41,7 @@ v2026-11-11c 起：
 - `faceme`：FaceMe Platform Web SDK 轉接（`js/engines/faceme-sdk.js`）。SDK（`FaceMeWebSDK_1.0.0.zip` 內的 `sdk/` 資料夾）由 FaceMe Platform Central 的 Developer 頁下載，不在此 repo（`sdk/`、`faceme-sdk/` 已 gitignore）。放到同網域後用 `?engine=faceme&sdk=./sdk/faceme-web-sdk.js`（模型預設在 `<sdk 目錄>/res`，可用 `&sdkRes=` 指定）。主機需 HTTPS，並把 `.fmin` 設為 `application/octet-stream`。行照類證件 SDK 無自動拍攝，會改用預設引擎。
 
 ## 實際上傳（FaceMe eKYC Console）
-頁尾「進階設定（管理者）」→ 選「實際上傳」，填 Console 或代理網址；token 只存在記憶體（勾「記住」才存本機 localStorage），不進程式碼與網址。
+右上角「設定」→ 選「實際上傳」，填 Console 或代理網址；token 只存在記憶體，不存 localStorage、不進程式碼與網址。
 依序呼叫：（選用）`/api/request/` 建立案件 → `face/spoofingcheck`（`img_stg1_act_1`×N、`detail`、`features`）→ `idcard/ocr`（`type`、`idCardImage`×3）→ `face/compare-boost/idcard`（`image1`、`image2`、`multipleFacePriority1`）。偽造檢查（`idcard/forgery`）需額外右側斜拍，尚未納入流程。欄位清單見 [docs/API-NOTES.md](docs/API-NOTES.md)。
 
 **CORS**：手機頁在 github.io，Console 通常不允許跨網域，且 token 不該放手機。建議跑 `proxy/ekyc-proxy.mjs`（token 放伺服器環境變數、只放行 eKYC 路徑與指定 Origin），並以 HTTPS 對外；頁面設定填代理網址、token 欄留空。案件模式可設 `EKYC_TEMPLATE_UUID`，代理會固定範本並移除回應中的 ekycToken。

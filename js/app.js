@@ -1,8 +1,8 @@
-import { APP_VERSION } from './version.js?v=2026-11-11c';
-import { Camera } from './camera.js?v=2026-11-11c';
-import { createEngine } from './engines/index.js?v=2026-11-11c';
-import { CARD_ASPECT } from './card-detector.js?v=2026-11-11c';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue } from './upload.js?v=2026-11-11c';
+import { APP_VERSION } from './version.js?v=2026-11-11c2';
+import { Camera } from './camera.js?v=2026-11-11c2';
+import { createEngine } from './engines/index.js?v=2026-11-11c2';
+import { CARD_ASPECT, CARD_RIGHTSIDE } from './card-detector.js?v=2026-11-11c2';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement } from './upload.js?v=2026-11-11c2';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -12,8 +12,11 @@ const MANUAL_AFTER_MS = Number(params.get('manualAfter') || 12000);
 const els = {
   stage: $('stage'), video: $('video'), hint: $('hint'), progress: $('progress'), shade: $('shade'), guide: $('guide'),
   detected: $('detected'), overlay: $('overlay'), flash: $('flash'), metrics: $('metrics'), stageTitle: $('stage-title'),
-  manual: $('btn-manual'),
+  manual: $('btn-manual'), banner: $('banner'), hintIcon: $('hint-icon'), shotCount: $('shot-count'), shotGuide: $('shot-guide'),
 };
+const ICONS = { left: '←', right: '→', up: '↑', down: '↓', closer: '＋', farther: '－', rotate: '↻', flat: '▭', tiltright: '↗', frame: '⛶',
+  still: '✋', ok: '✓', glare: '☀', light: '💡', blur: '◎', block: '!', person: '!', eye: '👁', wait: '…' };
+const STATE_LEVEL = { hold: 'good', capture: 'good', sdk: 'adjust', loading: 'adjust' };
 const camera = new Camera(els.video, els.stage);
 let cfg = loadConfig();
 const ENGINE_KIND = params.get('engine') === 'faceme' ? 'faceme' : 'opensource';
@@ -21,7 +24,7 @@ const engine = createEngine(ENGINE_KIND, { sdkUrl: params.get('sdk') || '', resP
 
 // In-memory only. Object URLs are revoked whenever an image is replaced or reset.
 // card = { image, frames[], type }   face = { image, frames[], stillIndex | (detail, still), cameraInfo }
-const shots = { card: null, face: null, cardUrl: null, faceUrl: null };
+const shots = { card: null, face: null, cardUrl: null, faceUrl: null, forgeryUrls: [] };
 const state = { step: 'intro', retakeOnly: false, guide: null, kind: null, lastHint: '', lastHintAt: 0, manualTimer: 0 };
 const forceRef = { now: false };
 window.__ekyc = { state, shots, version: APP_VERSION, events: [] };
@@ -31,7 +34,7 @@ $('ver').textContent = APP_VERSION;
 const typeSel = $('card-type');
 for (const [v, label] of CARD_TYPES) { const o = document.createElement('option'); o.value = v; o.textContent = label; typeSel.appendChild(o); }
 typeSel.value = cfg.cardType || 'TW_ID_CARD_FRONT';
-typeSel.addEventListener('change', () => { cfg.cardType = typeSel.value; if (cfg.remember) saveConfig(cfg); });
+typeSel.addEventListener('change', () => { cfg.cardType = typeSel.value; saveConfig(cfg); });
 const typeLabel = () => (CARD_TYPES.find(t => t[0] === typeSel.value) || [, '證件'])[1];
 $('engine-label').textContent = '目前：' + engine.label;
 if (DEBUG) els.metrics.hidden = false;
@@ -92,9 +95,15 @@ const ui = {
     // avoid flicker: a new warning must persist 250 ms unless it is a "good" state
     if (out.hint !== state.lastHint) {
       if (GOOD.has(out.state) || now - state.lastHintAt > 250 || !state.lastHint) {
-        if (out.hint !== els.hint.textContent) log({ hint: out.hint, state: out.state });
+        if (out.hint !== els.hint.textContent) {
+          log({ hint: out.hint, state: out.state, level: out.level, dir: out.dir });
+          els.banner.classList.remove('pop'); void els.banner.offsetWidth; els.banner.classList.add('pop');
+        }
         els.hint.textContent = out.hint; state.lastHint = out.hint; state.lastHintAt = now;
         els.stage.dataset.state = out.state;
+        els.stage.dataset.level = out.level || STATE_LEVEL[out.state] || 'adjust';
+        els.stage.dataset.dir = out.dir || '';
+        els.hintIcon.textContent = ICONS[out.dir] || '';
         els.stage.classList.toggle('warn', !GOOD.has(out.state) && out.state !== 'search' && out.state !== 'noface');
       }
     } else state.lastHintAt = now;
@@ -106,11 +115,14 @@ const ui = {
       els.detected.classList.add('on');
     } else els.detected.classList.remove('on');
     if (DEBUG) els.metrics.textContent = out.state + ' ' + JSON.stringify(out.metrics || {});
-    window.__ekyc.last = { state: out.state, hint: out.hint, metrics: out.metrics };
+    window.__ekyc.last = { state: out.state, hint: out.hint, level: els.stage.dataset.level, dir: out.dir, metrics: out.metrics };
   },
 };
 
-function flash() { els.flash.classList.remove('go'); void els.flash.offsetWidth; els.flash.classList.add('go'); }
+function flash() {
+  els.flash.classList.remove('go'); void els.flash.offsetWidth; els.flash.classList.add('go');
+  try { if (navigator.vibrate) navigator.vibrate(60); } catch (_) {} // Android; iOS Safari ignores
+}
 
 function cameraErrorText(e) {
   const n = e && e.name;
@@ -127,8 +139,9 @@ async function runCapture(kind) {
   els.manual.hidden = true;
   clearTimeout(state.manualTimer);
   state.lastHint = '';
-  els.hint.textContent = '準備相機中…';
-  els.stage.dataset.state = 'loading';
+  els.hint.textContent = '準備相機中…'; els.hintIcon.textContent = ICONS.wait;
+  els.stage.dataset.state = 'loading'; els.stage.dataset.level = 'adjust'; els.stage.dataset.dir = 'wait';
+  els.shotCount.hidden = true; els.shotGuide.hidden = true;
   els.stageTitle.textContent = kind === 'card' ? `步驟 1／3：拍攝${typeLabel()}（後鏡頭）` : '步驟 2／3：拍攝人臉（自拍鏡頭）';
   layoutGuide(kind);
   await camera.open(kind === 'card' ? 'environment' : 'user');
@@ -141,7 +154,10 @@ async function runCapture(kind) {
   flash();
   // engines may return a bare Blob (e.g. FaceMe SDK adapter) or { image, frames, ... }
   const shot = raw instanceof Blob ? { image: raw, frames: [raw], stillIndex: 0 } : raw;
-  if (kind === 'card') shot.type = typeSel.value;
+  if (kind === 'card') {
+    shot.type = typeSel.value;
+    if (forgeryApplies(cfg, shot.type)) shot.forgery = await runForgery(ctx);
+  }
   if (kind === 'face' && !shot.cameraInfo) shot.cameraInfo = camera.info();
   log({ captured: kind, bytes: shot.image.size, frames: shot.frames.length, still: kind === 'face' ? stillValue(shot, cfg) : undefined, manual: forceRef.now });
   setShot(kind, shot);
@@ -149,9 +165,47 @@ async function runCapture(kind) {
   return shot;
 }
 
+// Forgery shots: N 'front' (from directly above) + M 'rightSide' (from the upper right, tilted), counts from the
+// Forgery Requirements API when available. Uses the same open rear camera.
+async function runForgery(baseCtx) {
+  const type = typeSel.value;
+  els.hint.textContent = '準備證件防偽拍攝…'; state.lastHint = '';
+  const req = await getForgeryRequirement(cfg, type);
+  log({ forgeryRequirement: req });
+  const plan = [];
+  for (let i = 0; i < req.front; i++) plan.push({ direction: 'front', i: i + 1, n: req.front, full: i < req.full });
+  for (let i = 0; i < req.rightSide; i++) plan.push({ direction: 'rightSide', i: i + 1, n: req.rightSide, full: false });
+  const out = { shots: [], full: [], counts: req };
+  for (const p of plan) {
+    const front = p.direction === 'front';
+    els.stageTitle.textContent = `證件防偽：${front ? '正面' : '右上斜拍'} 第 ${p.i}/${p.n} 張`;
+    els.shotCount.textContent = `${front ? '正面' : '右上斜拍'} 第 ${p.i}/${p.n} 張`;
+    els.shotCount.hidden = false;
+    els.shotGuide.innerHTML = front
+      ? '手機與證件平行、從<b>正上方</b>拍。每拍一張後會提示下一張。'
+      : '把手機移到證件<b>右上方</b>，鏡頭斜斜朝左下（約 20–30 度），證件仍要整張在框內。';
+    els.shotGuide.hidden = false;
+    state.lastHint = '';
+    ui.update({ state: 'search', hint: front ? `正面第 ${p.i} 張：請從正上方對準證件` : `右上斜拍第 ${p.i} 張：手機移到證件右上方斜拍`, level: 'adjust', dir: front ? 'frame' : 'tiltright', progress: 0 });
+    await new Promise(r => setTimeout(r, p.i === 1 ? 900 : 450)); // let the user read / move between shots
+    forceRef.now = false; els.manual.hidden = true; clearTimeout(state.manualTimer);
+    state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS);
+    const opts = front ? { steadyMs: 350 } : CARD_RIGHTSIDE;
+    const r = await engine.captureCardShot({ ...baseCtx, cardOptions: opts, keep: 1, grabFull: p.full });
+    clearTimeout(state.manualTimer);
+    flash();
+    out.shots.push({ blob: r.image, direction: p.direction });
+    if (r.full) out.full.push(r.full);
+    log({ forgeryShot: p.direction, i: p.i, n: p.n, bytes: r.image.size, manual: forceRef.now });
+  }
+  els.shotCount.hidden = true; els.shotGuide.hidden = true;
+  return out;
+}
+
 function setShot(kind, shot) {
   const key = kind + 'Url';
   if (shots[key]) URL.revokeObjectURL(shots[key]);
+  if (kind === 'card') { shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = []; }
   shots[kind] = shot; shots[key] = URL.createObjectURL(shot.image);
 }
 
@@ -182,10 +236,28 @@ function showReview() {
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
   $('card-meta').textContent = `${typeLabel()}・保留 ${shots.card.frames.length} 張供 OCR（顯示最清晰的一張）` + (shots.card.frames.length < 3 ? '。手動拍照只有 1 張，OCR 可能要求補拍，建議重拍讓系統自動拍。' : '');
+  renderForgery();
   $('face-meta').textContent = `活體序列 ${shots.face.frames.length} 張` + (shots.face.detail ? '・活體資料由 FaceMe SDK 產生' : `・靜止幀為第 ${(shots.face.stillIndex ?? 0) + 1} 張`);
   $('upload-result').hidden = true;
   $('btn-upload').disabled = false;
   renderMode();
+}
+
+function renderForgery() {
+  const fig = $('forgery-fig'), strip = $('forgery-strip'), f = shots.card && shots.card.forgery;
+  fig.hidden = !f; strip.innerHTML = '';
+  if (!f) return;
+  shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = [];
+  const cnt = { front: 0, rightSide: 0 };
+  for (const s of f.shots) {
+    cnt[s.direction]++;
+    const u = URL.createObjectURL(s.blob); shots.forgeryUrls.push(u);
+    const fg = document.createElement('figure');
+    fg.innerHTML = `<img alt=""><figcaption>${s.direction === 'front' ? '正面' : '右上'} ${cnt[s.direction]}</figcaption>`;
+    fg.querySelector('img').src = u; strip.appendChild(fg);
+  }
+  $('forgery-meta').textContent = `正面 ${cnt.front} 張＋右上斜拍 ${cnt.rightSide} 張` + (f.full.length ? `＋全幅 ${f.full.length} 張` : '') +
+    `（張數來源：${f.counts.source === 'api' ? 'Forgery Requirements API' : '預設 5＋2'}）・上傳時呼叫 idcard/forgery`;
 }
 
 // ---------- buttons ----------
@@ -238,27 +310,43 @@ $('btn-upload').addEventListener('click', async () => {
 function kb(list) { const n = (Array.isArray(list) ? list : [list]).reduce((a, b) => a + (b ? b.size : 0), 0); return Math.round(n / 1024) + ' KB'; }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
-// ---------- admin settings ----------
+// ---------- settings sheet (reachable from every page; changes apply immediately) ----------
 const form = $('admin-form');
-const BOOL_KEYS = ['useRequest', 'doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'idLargestFace', 'stillZeroBased', 'remember'];
+const sheet = $('settings');
+const BOOL_KEYS = ['useRequest', 'doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'idLargestFace', 'stillZeroBased', 'doForgery'];
 const TEXT_KEYS = ['baseUrl', 'token', 'platformAuth', 'templateUuid'];
 function fillForm() {
   form.mode.value = cfg.mode;
   for (const k of TEXT_KEYS) form[k].value = cfg[k] || '';
   for (const k of BOOL_KEYS) form[k].checked = !!cfg[k];
-  $('real-fields').disabled = cfg.mode !== 'real';
   // enableStrictMode uses the FaceMe web component's encryption: only meaningful with the SDK engine
   form.strictMode.disabled = ENGINE_KIND !== 'faceme';
   if (ENGINE_KIND !== 'faceme') form.strictMode.checked = false;
+  renderRealNote();
 }
-form.addEventListener('change', () => { $('real-fields').disabled = form.mode.value !== 'real'; });
-$('btn-save-admin').addEventListener('click', () => {
+function renderRealNote() {
+  const real = form.mode.value === 'real';
+  $('real-fields').classList.toggle('inactive', !real);
+  $('real-note').textContent = real ? '目前為實際上傳，下列設定會在按「上傳」時使用。' : '目前為模擬上傳；下列設定可先調整，切換到「實際上傳」時才會使用。';
+}
+let savedTimer = 0;
+function applyForm() {
   cfg = { ...cfg, mode: form.mode.value, cardType: typeSel.value };
   for (const k of TEXT_KEYS) cfg[k] = form[k].value.trim();
   for (const k of BOOL_KEYS) cfg[k] = form[k].checked;
   if (ENGINE_KIND !== 'faceme') cfg.strictMode = false;
   engine.strictMode = !!cfg.strictMode;
-  saveConfig(cfg); renderMode();
-  const s = $('admin-saved'); s.hidden = false; setTimeout(() => { s.hidden = true; }, 1500);
-});
+  saveConfig(cfg); // token / platform-auth are stripped inside saveConfig
+  renderMode(); renderRealNote();
+  if (state.step === 'review' && shots.card) renderForgery();
+  const s = $('admin-saved'); s.textContent = '已套用'; clearTimeout(savedTimer); savedTimer = setTimeout(() => { s.textContent = ''; }, 1200);
+  log({ settings: Object.fromEntries(BOOL_KEYS.map(k => [k, cfg[k]]).concat([['mode', cfg.mode]])) });
+}
+form.addEventListener('change', applyForm);
+form.addEventListener('input', (e) => { if (e.target.matches('input[type=url], input[type=text], input[type=password]')) applyForm(); });
+function openSettings() { fillForm(); sheet.hidden = false; document.body.classList.add('sheet-open'); $('btn-settings').setAttribute('aria-expanded', 'true'); $('btn-settings-close').focus({ preventScroll: true }); }
+function closeSettings() { sheet.hidden = true; document.body.classList.remove('sheet-open'); $('btn-settings').setAttribute('aria-expanded', 'false'); }
+$('btn-settings').addEventListener('click', openSettings);
+sheet.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeSettings(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) closeSettings(); });
 fillForm(); renderMode(); setStep('card');

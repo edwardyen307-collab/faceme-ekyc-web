@@ -4,8 +4,8 @@
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector } from '../card-detector.js';
-import { FaceChecker, loadLandmarker } from '../face-checker.js';
+import { CardDetector } from '../card-detector.js?v=2026-11-11c2';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11c2';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -22,16 +22,17 @@ export class OpenSourceEngine {
 
   cancel() { if (this._cancel) this._cancel(); }
 
-  /** ctx: { camera, ui, getGuide(): display rect, forceRef: {now:boolean} } */
+  /** ctx: { camera, ui, getGuide(): display rect, forceRef: {now:boolean}, cardOptions?, keep?, grabFull? } */
   captureIdCard(ctx) {
     const det = new CardDetector(ctx.cardOptions || {});
+    const KEEP = ctx.keep || CARD_KEEP;
     const canvas = document.createElement('canvas');
     const cands = []; // {blob, sharp}
     let lastGrab = 0;
     const keep = (blob, sharp) => {
       cands.push({ blob, sharp });
       cands.sort((a, b) => b.sharp - a.sharp);
-      cands.length = Math.min(cands.length, CARD_KEEP);
+      cands.length = Math.min(cands.length, KEEP);
     };
     return this._loop(ctx, async (ts) => {
       const cam = ctx.camera;
@@ -54,14 +55,18 @@ export class OpenSourceEngine {
           const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
           keep(await cam.grab(src, 1600), ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0));
         }
-        return { image: cands[0].blob, frames: cands.map(c => c.blob) };
+        const res = { image: cands[0].blob, frames: cands.map(c => c.blob) };
+        if (ctx.grabFull) res.full = await cam.grab({ x: 0, y: 0, w: cam.video.videoWidth, h: cam.video.videoHeight }, 1600);
+        return res;
       }
       return null;
     });
   }
 
+  captureCardShot(ctx) { return this.captureIdCard(ctx); }
+
   async captureFace(ctx) {
-    ctx.ui.update({ state: 'loading', hint: '正在載入人臉偵測模型…', progress: 0, metrics: {} });
+    ctx.ui.update({ state: 'loading', hint: '正在載入人臉偵測模型…', level: 'adjust', dir: 'wait', progress: 0, metrics: {} });
     const lmk = await loadLandmarker();
     const checker = new FaceChecker(ctx.faceOptions || {});
     const canvas = document.createElement('canvas');
@@ -84,7 +89,7 @@ export class OpenSourceEngine {
       if (nFaces !== 1) seq.length = 0; // sequence must show the (one) face continuously
       if (out.ready && !ctx.forceRef.now && seq.length < SEQ_MIN - 1) {
         // quality is fine but the liveness sequence is still short: keep holding a little longer
-        ctx.ui.update({ ...out, state: 'hold', hint: '很好，請保持不動', ready: false, progress: 0.5 + 0.5 * seq.length / SEQ_MIN });
+        ctx.ui.update({ ...out, state: 'hold', hint: '很好，請保持不動', level: 'good', dir: 'ok', ready: false, progress: 0.5 + 0.5 * seq.length / SEQ_MIN });
       } else if (out.ready || ctx.forceRef.now) {
         const image = await cam.grab(crop, 1280);
         seq.push(await cam.grab(crop, SEQ_MAX_W));

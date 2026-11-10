@@ -49,15 +49,44 @@ export const DEFAULT_CONFIG = {
   mode: 'mock', baseUrl: '', token: '', platformAuth: '',
   useRequest: false, templateUuid: '',         // create an eKYC Console request first and use its platformToken as platform-auth
   doSpoof: true, doOcr: true, doCompare: true,
-  strictMode: false, deepfake: false, imageDeskewed: false, idLargestFace: true, stillZeroBased: false, remember: false,
+  strictMode: false, deepfake: false, imageDeskewed: false, idLargestFace: true, stillZeroBased: false,
+  doForgery: false,
 };
+// Never persisted: secrets stay in memory for this page only.
+const SECRET_KEYS = ['token', 'platformAuth'];
 
 export function loadConfig() {
-  try { const s = localStorage.getItem(LS_KEY); if (s) { const c = JSON.parse(s); return { ...DEFAULT_CONFIG, ...c, remember: c.remember !== false }; } } catch (_) {}
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const c = JSON.parse(raw);
+      if (SECRET_KEYS.some(k => c[k])) { for (const k of SECRET_KEYS) delete c[k]; localStorage.setItem(LS_KEY, JSON.stringify(c)); } // purge older saves
+      delete c.remember;
+      return { ...DEFAULT_CONFIG, ...c, token: '', platformAuth: '' };
+    }
+  } catch (_) {}
   return { ...DEFAULT_CONFIG };
 }
 export function saveConfig(cfg) {
-  try { if (cfg.remember) localStorage.setItem(LS_KEY, JSON.stringify(cfg)); else localStorage.removeItem(LS_KEY); } catch (_) {}
+  const c = { ...cfg }; for (const k of SECRET_KEYS) delete c[k]; delete c.remember;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(c)); } catch (_) {}
+}
+
+// ---------- ID card forgery (TW ID card front/back only) ----------
+export const FORGERY_TYPES = ['TW_ID_CARD_FRONT', 'TW_ID_CARD_BACK'];
+export const FORGERY_DEFAULT_COUNTS = { front: 5, rightSide: 2, full: 0 };
+export const forgeryApplies = (cfg, type) => !!cfg.doForgery && FORGERY_TYPES.includes(type);
+/** Ask the Console how many images it wants (Forgery Requirements API); falls back to 5/2/0. */
+export async function getForgeryRequirement(cfg, type, signal) {
+  if (cfg.mode !== 'real' || !cfg.baseUrl) return { ...FORGERY_DEFAULT_COUNTS, source: 'default' };
+  try {
+    const d = await post(cfg, ENDPOINTS.forgeryRequirement, buildForgeryRequirementForm(type), signal);
+    const c = pick(d, 'imageCounts') || {};
+    const n = (v, dflt) => (Number.isFinite(+v) && +v >= 0 && +v <= 10 ? +v : dflt);
+    return { front: n(c.front, 5), rightSide: n(c.rightSide, 2), full: n(c.full, 0), source: 'api' };
+  } catch (e) {
+    return { ...FORGERY_DEFAULT_COUNTS, source: 'default', error: e.message };
+  }
 }
 
 // Documented error messages -> Chinese guidance. The document lists HTTP status + message text
@@ -205,6 +234,7 @@ export async function uploadEkyc(cfg, card, face, onStep, signal) {
       ['ocr', `證件 OCR（${card.type}，${card.frames.length} 張）`],
       ['compare', '證件與人臉 1:1 比對'],
     ];
+    if (card.forgery) plan.push(['forgery', `證件防偽（${card.forgery.shots.filter(x => x.direction === 'front').length} 張正面＋${card.forgery.shots.filter(x => x.direction === 'rightSide').length} 張右側斜拍）`]);
     for (const [key, name] of plan) {
       onStep && onStep(`模擬：${name}…`);
       await new Promise(r => setTimeout(r, 450));
@@ -258,6 +288,14 @@ export async function uploadEkyc(cfg, card, face, onStep, signal) {
     if (m === true) return { ok: true, verdict: '同一人', summary };
     if (m === false) return { ok: false, verdict: '比對不符，請確認證件與本人', summary };
     return { ok: false, verdict: '無法判讀比對結果', summary };
+  });
+  if (card.forgery) await run('forgery', '證件防偽檢查', () => post(call, ENDPOINTS.forgery, buildForgeryForm(card.type, card.forgery.shots, card.forgery.full, cfg), signal), (d) => {
+    const r = pick(d, 'result'), sc = pick(d, 'realScore'), why = pick(d, 'rejectReason');
+    const summary = `realScore：${fmt(sc)}` + (why ? `，rejectReason：${fmt(why)}` : '');
+    if (r === 'real') return { ok: true, verdict: '證件為真', summary };
+    if (r === 'forgery') return { ok: false, verdict: '疑似偽造或翻拍的證件，請改用實體證件重拍', summary, retake: 'card' };
+    if (r === 'unknown') return { ok: false, verdict: '無法判定真偽，請在光線充足處重拍證件與防偽影像', summary, retake: 'card' };
+    return { ok: false, verdict: '無法判讀防偽結果：' + fmt(r), summary };
   });
   return { mock: false, request, steps };
 }
