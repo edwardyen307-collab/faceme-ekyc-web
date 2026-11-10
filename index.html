@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1f33">
+<meta name="robots" content="noindex">
+<title>eKYC · FaceMe 預覽 v2026-11-11a</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="styles.css?v=2026-11-11a">
+</head>
+<body>
+<header class="top">
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11a</h1>
+  <ol class="steps" aria-label="步驟">
+    <li data-step="card"><span>1</span>拍證件</li>
+    <li data-step="face"><span>2</span>拍人臉</li>
+    <li data-step="review"><span>3</span>確認上傳</li>
+  </ol>
+</header>
+
+<main>
+  <section id="screen-intro" class="screen active" aria-labelledby="intro-h">
+    <div class="panel">
+      <h2 id="intro-h">線上身分驗證</h2>
+      <p>接下來會依序：</p>
+      <ol class="howto">
+        <li><b>拍攝身分證件正面</b>：使用後鏡頭，把證件放進框內，系統會自動拍照。</li>
+        <li><b>拍攝人臉</b>：切換成自拍鏡頭，正面看鏡頭、臉放進橢圓框並保持不動，系統會自動拍照。</li>
+        <li><b>確認照片</b>：可重拍或上傳。</li>
+      </ol>
+      <p class="note">拍攝的照片只保存在這支手機的瀏覽器記憶體中，關閉頁面即消失。<span id="mode-note"></span></p>
+      <button id="btn-start" class="btn primary big" type="button">開始驗證</button>
+      <p id="intro-error" class="error" role="alert" hidden></p>
+    </div>
+  </section>
+
+  <section id="screen-capture" class="screen" aria-live="polite">
+    <div id="stage" class="stage">
+      <video id="video" playsinline webkit-playsinline muted autoplay></video>
+      <svg id="overlay" class="overlay" aria-hidden="true">
+        <path id="shade" fill-rule="evenodd"></path>
+        <path id="guide" class="guide"></path>
+        <rect id="detected" class="detected" rx="10" ry="10"></rect>
+      </svg>
+      <div id="hint" class="hint">準備相機中…</div>
+      <div id="progress" class="progress"><i></i></div>
+      <div id="flash" class="flash"></div>
+      <div id="stage-title" class="stage-title"></div>
+      <pre id="metrics" class="metrics" hidden></pre>
+    </div>
+    <div class="capture-bar">
+      <button id="btn-back" class="btn ghost" type="button">返回</button>
+      <button id="btn-manual" class="btn" type="button" hidden>手動拍照</button>
+    </div>
+  </section>
+
+  <section id="screen-review" class="screen" aria-labelledby="review-h">
+    <h2 id="review-h" class="sr">確認照片</h2>
+    <div class="shots">
+      <figure><figcaption>① 證件照</figcaption><img id="img-card" alt="拍攝的證件照"></figure>
+      <figure><figcaption>② 人臉照</figcaption><img id="img-face" alt="拍攝的人臉照"></figure>
+    </div>
+    <div id="upload-mode" class="badge"></div>
+    <div class="review-actions">
+      <button id="btn-upload" class="btn primary big" type="button">上傳</button>
+      <div class="row">
+        <button id="btn-retake-card" class="btn" type="button">重拍證件</button>
+        <button id="btn-retake-face" class="btn" type="button">重拍人臉</button>
+      </div>
+    </div>
+    <div id="upload-result" class="result" role="status" hidden></div>
+  </section>
+</main>
+
+<footer>
+  <details id="admin">
+    <summary>進階設定（管理者）</summary>
+    <form id="admin-form" autocomplete="off" onsubmit="return false">
+      <fieldset>
+        <legend>上傳方式</legend>
+        <label><input type="radio" name="mode" value="mock" checked> 模擬上傳（資料不離開手機）</label>
+        <label><input type="radio" name="mode" value="real"> 實際上傳到 FaceMe eKYC Console</label>
+      </fieldset>
+      <fieldset id="real-fields">
+        <label>eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
+        <label>Access Token（Authorization）<input name="token" type="password" autocomplete="off"></label>
+        <label>platform-auth（選填）<input name="platformAuth" type="password" autocomplete="off"></label>
+        <label><input type="checkbox" name="doCompare" checked> 證件與人臉 1:1 比對（compare-boost/idcard）</label>
+        <label><input type="checkbox" name="doOcr"> 證件 OCR（idcard/ocr）</label>
+        <label><input type="checkbox" name="doSpoof"> 人臉活體檢查（face/spoofingcheck）</label>
+        <label><input type="checkbox" name="remember"> 記住在這台裝置（localStorage）</label>
+        <p class="note">Token 不會寫進網址或程式碼。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
+      </fieldset>
+      <fieldset>
+        <legend>偵測引擎</legend>
+        <p id="engine-label" class="note"></p>
+        <p class="note">改用 FaceMe Web SDK：網址加 <code>?engine=faceme&amp;sdk=./faceme-sdk/xxx.js</code>（SDK 檔需另行取得，不在此 repo）。</p>
+      </fieldset>
+      <button id="btn-save-admin" class="btn" type="button">儲存設定</button>
+      <span id="admin-saved" class="note" hidden>已儲存</span>
+    </form>
+  </details>
+  <p class="ver">版本 <span id="ver"></span> · 偵測在手機瀏覽器內執行</p>
+</footer>
+<script type="module" src="js/app.js?v=2026-11-11a"></script>
+</body>
+</html>
