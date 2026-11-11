@@ -2,6 +2,7 @@
 Usage: python make_feeds.py OUTDIR   (needs Pillow + ffmpeg)
 All people/cards are synthetic test samples, not real persons/documents."""
 import sys, os, random, subprocess, math
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = sys.argv[1] if len(sys.argv) > 1 else '/tmp/ekyc-feeds'
@@ -38,7 +39,13 @@ def make_card():
     return card, mask
 
 def make_card_back():
-    """Synthetic ID back: different layout (address rows, barcode) so it differs from the front."""
+    """11h: the back feeds use the specimen-like TW ID back (tests/make_twid.py, real layout, no real data)."""
+    from make_twid import make_twid_back, laminate
+    c, m = make_twid_back()
+    return laminate(c, m, Image.new('RGB', (8, 8), (150, 120, 90))), m   # clear laminate border shows the desk
+
+def make_card_back_old():
+    """(pre-11h) Synthetic ID back: different layout (address rows, barcode) so it differs from the front."""
     cw, ch = 856, 540
     card = Image.new('RGB', (cw, ch), (232, 226, 210))
     d = ImageDraw.Draw(card)
@@ -59,7 +66,21 @@ def make_card_back():
     return card, mask
 
 def make_card_back_real():
-    """Closer to a real TW ID back: pale, low-contrast print (fine guilloche, thin small text, barcode), no portrait."""
+    """11h: specimen-like TW ID back, slightly washed out (light-table / glare look)."""
+    from make_twid import make_twid_back, laminate
+    from PIL import ImageEnhance
+    c, m = make_twid_back(serial='0000654321', seed=9)
+    c = laminate(ImageEnhance.Contrast(c).enhance(0.8), m, Image.new('RGB', (8, 8), (200, 200, 196)))
+    return c, m
+
+def make_card_twid_front():
+    """Specimen-like TW ID front (real layout; synthetic face from tests/feeds/face.jpg)."""
+    from make_twid import make_twid_front, laminate
+    c, m = make_twid_front()
+    return laminate(c, m, Image.new('RGB', (8, 8), (150, 120, 90))), m
+
+def make_card_back_real_old():
+    """(pre-11h) Closer to a real TW ID back: pale, low-contrast print (fine guilloche, thin small text, barcode), no portrait."""
     cw, ch = 856, 540
     card = Image.new('RGB', (cw, ch), (236, 239, 230))
     d = ImageDraw.Draw(card)
@@ -297,6 +318,64 @@ def track_feeds():
     write([place_rot(bg, *make_card_photo_left(), 440, W / 2 - 10, H * 0.47, -4) for _ in range(30)], 'card-track-photo-left')
     write([place_rot(bg, *make_bank_card(), 440, W / 2 + 10, H * 0.48, 4) for _ in range(30)], 'card-track-bank')
 
+def low_contrast_bg():
+    """Light grey desk / tablecloth: low edge contrast against the pale card (luma difference ~25-30)."""
+    bg = Image.new('RGB', (W, H), (196, 194, 190)); d = ImageDraw.Draw(bg); rnd = random.Random(21)
+    for i in range(0, H, 9):
+        c = 194 + rnd.randint(-3, 3); d.line([(0, i), (W, i + rnd.randint(-2, 2))], fill=(c + 2, c, c - 4), width=5)
+    return bg.filter(ImageFilter.GaussianBlur(1.5))
+
+def tint(img, kind):
+    if kind == 'warm': r, g, b = img.split(); return Image.merge('RGB', (r.point(lambda v: min(255, int(v * 1.06))), g, b.point(lambda v: int(v * 0.86))))
+    if kind == 'cool': r, g, b = img.split(); return Image.merge('RGB', (r.point(lambda v: int(v * 0.9)), g, b.point(lambda v: min(255, int(v * 1.06)))))
+    return img
+
+def jitter_feed(name, card, mask, bg, wfrac, amp, rot, finger=None, kind='', n=75, seed=3):
+    """Hand-held card: smooth hand shake (+-amp of the frame width, two frequencies), small rotation, optional finger
+    over one edge, motion blur on the faster frames, colour cast."""
+    rnd = random.Random(seed); ph = [rnd.uniform(0, 6.28) for _ in range(6)]
+    wpx = int(W * wfrac); hpx = int(wpx * 540 / 856); fr = []
+    for i in range(n):
+        t = i / FPS
+        sx = 0.6 * math.sin(2 * math.pi * 1.4 * t + ph[0]) + 0.4 * math.sin(2 * math.pi * 3.3 * t + ph[1])
+        sy = 0.6 * math.sin(2 * math.pi * 1.1 * t + ph[2]) + 0.4 * math.sin(2 * math.pi * 2.9 * t + ph[3])
+        sa = math.sin(2 * math.pi * 0.9 * t + ph[4])
+        cx = W / 2 + sx * amp * W; cy = H * 0.45 + sy * amp * W; ang = sa * rot
+        c = card.resize((wpx, hpx), Image.LANCZOS).convert('RGBA'); c.putalpha(mask.resize((wpx, hpx)))
+        if finger:   # skin-coloured thumb over one edge, moving with the card
+            dd = ImageDraw.Draw(c)
+            if finger == 'bottom': box = [int(wpx * 0.30), int(hpx * 0.86), int(wpx * 0.46), hpx + 40]
+            else: box = [-40, int(hpx * 0.40), int(wpx * 0.12), int(hpx * 0.62)]
+            dd.rounded_rectangle(box, radius=int(wpx * 0.06), fill=(222, 170, 140, 255))
+        c = c.rotate(ang, expand=True, resample=Image.BICUBIC)
+        f = bg.copy()
+        if finger:   # the rest of the hand beyond the card edge
+            d2 = ImageDraw.Draw(f)
+            if finger == 'bottom': d2.rounded_rectangle([int(cx - wpx * 0.2), int(cy + hpx * 0.45), int(cx - wpx * 0.04), H + 50], radius=30, fill=(214, 162, 132))
+            else: d2.rounded_rectangle([-50, int(cy - hpx * 0.1), int(cx - wpx * 0.45), int(cy + hpx * 0.12)], radius=30, fill=(214, 162, 132))
+        f.paste(c, (int(cx - c.width / 2), int(cy - c.height / 2)), c)
+        if finger:   # re-draw the thumb tip over the card (it is ON the card)
+            pass
+        speed = abs(math.cos(2 * math.pi * 1.4 * t + ph[0])) * amp * 1.4 * 2 * math.pi / FPS
+        if speed > 0.012: f = f.filter(ImageFilter.GaussianBlur(0.7))
+        fr.append(exposure(tint(f, kind), gain=1.03, blur=0.5))
+    write(fr, name)
+
+def jitter_feeds():
+    """11h hand-shake feeds for the auto-tracking lock / hold tests (specimen-like TW ID, 55-70% of the frame width)."""
+    from make_twid import make_twid_back, make_twid_front, laminate
+    bg, lc = background(), low_contrast_bg()
+    def lam(fnc, b):
+        c, m = fnc(); return laminate(c, m, b.crop((100, 300, 440, 520))), m
+    jitter_feed('card-jitter-back', *lam(make_twid_back, bg), bg, 0.66, 0.04, 2.0, seed=3)
+    jitter_feed('card-jitter-back-lowc', *lam(make_twid_back, lc), lc, 0.56, 0.035, 1.5, finger='bottom', kind='warm', seed=4)
+    jitter_feed('card-jitter-front', *lam(make_twid_front, bg), bg, 0.64, 0.05, 2.0, finger='left', seed=5)
+    jitter_feed('card-jitter-front-lowc', *lam(make_twid_front, lc), lc, 0.6, 0.03, 1.5, finger='bottom', kind='cool', seed=6)
+    # still, realistic specimen-like cards for the fixed-guide mode (laminate, ~83% of the frame width like the guide)
+    cy = int(H * 0.42)
+    write([exposure(tint(place(bg, *lam(make_twid_back, bg), 450, W // 2, cy), 'warm')) for _ in range(30)], 'card-twid-back')
+    write([exposure(place(bg, *lam(make_twid_front, bg), 450, W // 2, cy)) for _ in range(30)], 'card-twid-front')
+
 def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     img = Image.open(os.path.join(HERE, 'feeds', src)).convert('RGB')
     if zoom != 1.0:  # zoom<1: face smaller (user too far) - pad with wall colour
@@ -321,6 +400,8 @@ def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == 'new':
         real_feeds(); face_feed('face-profile.jpg', 'face-profile', n=30); sys.exit()
+    if len(sys.argv) > 2 and sys.argv[2] == 'jitter':
+        jitter_feeds(); sys.exit()
     if len(sys.argv) > 2 and sys.argv[2] == 'track':
         track_feeds(); sys.exit()
     if len(sys.argv) > 2 and sys.argv[2] == 'new0':
@@ -331,6 +412,7 @@ if __name__ == '__main__':
     phase_feeds()
     real_feeds()
     track_feeds()
+    jitter_feeds()
     face_feed('face.jpg', 'face')
     face_feed('face-mask.jpg', 'face-mask')
     face_feed('face.jpg', 'face-offset', shift_x=150, n=30)   # face to the right of the raw frame

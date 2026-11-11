@@ -3,26 +3,32 @@
 // -> per-side refinement -> temporal lock (the same quad must be seen on several consecutive frames, so a random
 // background rectangle is not locked onto) -> size / flatness / glare / sharpness / steadiness checks.
 // Works on a downscaled RGBA ImageData of the whole video frame.
-import { toGray, laplacianVariance, meanAbsDiff, glareStats } from './imageops.js?v=2026-11-11g';
-import { phrase } from './hints.js?v=2026-11-11g';
-import { CARD_ASPECT, quadGeometry } from './card-detector.js?v=2026-11-11g';
+import { toGray, laplacianVariance, glareStats } from './imageops.js?v=2026-11-11h';
+import { phrase } from './hints.js?v=2026-11-11h';
+import { CARD_ASPECT, quadGeometry } from './card-detector.js?v=2026-11-11h';
 
 export const TRACK_DEFAULTS = {
   mode: 'front',          // 'front' (flat shot) | 'rightSide' (oblique forgery shot)
   aspect: CARD_ASPECT,    // expected aspect of the document (ID-1 by default)
   aspectTol: 0.24,        // flat mode: accepted |measured/expected - 1|
-  minWidthFrac: 0.6,      // card width / frame width below this -> "再靠近一點" (OCR / forgery clarity)
+  minWidthFrac: 0.5,      // card width / frame width below this -> "再靠近一點" (11h: 0.6 -> 0.5; the deskewed crop
+                          // is still >= ~500 px wide on a 1080p stream, enough for OCR / the side check)
   maxWidthFrac: 0.97,
-  maxPerspective: 0.12,   // flat mode: |1 - right/left|, |1 - top/bottom| above this -> "拿平"
-  maxCornerDevFlat: 10,
-  minSupport: 0.6,        // fraction of each side covered by matching edge pixels
-  minEndSupport: 0.5,     // ... and of each end (5–22% / 78–95%) of every side, so the corners are real
-  lockFrames: 3,          // consecutive consistent detections before the quad is trusted
-  lockTol: 0.06,          // corner distance / frame width that still counts as "the same" quad
-  loseMs: 350,
+  maxPerspective: 0.17,   // flat mode: |1 - right/left|, |1 - top/bottom| above this -> "拿平" (11h: 0.12 -> 0.17; the
+                          // tracked crop is deskewed anyway, and faint edges on a pale desk make the quad noisier)
+  maxCornerDevFlat: 14,
+  minSupport: 0.55,       // fraction of each side covered by matching edge pixels (search, not yet locked)
+  minEndSupport: 0.4,     // ... and of each end (5–22% / 78–95%) of every side, so the corners are real;
+                          //     one side may miss one end (a finger holding the card) if its overall support is fine
+  lockSupport: 0.4, lockEndSupport: 0.2, // once locked: re-detection near the locked quad with relaxed edge needs
+  lockFrames: 2,          // consistent detections before the quad is trusted (11h: 3 -> 2)
+  lockIoU: 0.55,          // association: a new quad is "the same card" if it overlaps the candidate this much ...
+  lockTol: 0.1,           // ... or all corners within this fraction of the frame width (a slightly moving card keeps the lock)
+  graceFrames: 4, loseMs: 700, // missed detections tolerated (fingers / blur / glare on one edge) before the lock drops
   smooth: 0.45,           // display smoothing (EMA weight of the newest detection)
-  minSharpness: 45, maxGlare: 0.03, glareRel: 14,
-  steadyTol: 0.022, steadyDiffTol: 24, steadyMs: 500, steadyWindow: 5,
+  minSharpness: 40, maxGlare: 0.03, glareRel: 14,
+  // steadiness is judged on the SMOOTHED quad vs its recent average (like the fixed mode), not on raw frame motion
+  steadyTol: 0.055, steadyMs: 450, steadyWindow: 6,
   // oblique (rightSide) rules, same as the fixed-guide mode
   minSideRatio: 1.12, maxSideRatio: 1.9, minCornerDev: 6,
 };
@@ -53,7 +59,7 @@ function percentile(mag, p) {
 }
 // Hough with each edge pixel voting only near its own gradient direction.
 export function _hough(E, thr) { return houghLines(E, thr); }
-function houghLines(E, thr, maxLines = 60) {
+function houghLines(E, thr, maxLines = 40) {
   const { gx, gy, mag, w, h } = E;
   const NT = 90, diag = Math.ceil(Math.hypot(w, h)), NR = 2 * diag + 1;
   const acc = new Float32Array(NT * NR);
@@ -77,12 +83,15 @@ function houghLines(E, thr, maxLines = 60) {
     if (v > floor && v >= acc[t * NR + r - 1] && v >= acc[t * NR + r + 1]) cells.push([v, t, r - diag]);
   }
   cells.sort((a, b) => b[0] - a[0]);
-  const lines = [];
+  // up to maxLines per orientation group (11h): a textured desk (many parallel grain lines) must not use up the
+  // budget so that the card's weaker edges in the other direction never make the list
+  const lines = []; let nH = 0, nV = 0;
   for (const [v, t, r] of cells) {
-    const th = t * 2;
+    const th = t * 2, isH = Math.abs(th - 90) <= 40;
+    if (isH ? nH >= maxLines : nV >= maxLines) continue;
     if (lines.some(L => { let d = Math.abs(L.th - th); d = Math.min(d, 180 - d); return d <= 6 && Math.abs((d === Math.abs(L.th - th) ? L.r - r : L.r + r)) <= 8; })) continue;
-    lines.push({ th, r, v });
-    if (lines.length >= maxLines) break;
+    lines.push({ th, r, v }); if (isH) nH++; else nV++;
+    if (nH >= maxLines && nV >= maxLines) break;
   }
   return lines;
 }
@@ -116,13 +125,14 @@ function support(E, p, q, thr, t0 = 0.06, t1 = 0.94) {
 }
 // refine one side: strongest edge along the normal within +-4 px at several stations, then a robust line fit
 function refineSide(E, p, q, thr) {
+  const reach = 4;
   const { mag, w, h } = E;
   const len = Math.hypot(q.x - p.x, q.y - p.y), ux = (q.x - p.x) / len, uy = (q.y - p.y) / len, nx = -uy, ny = ux;
   const pts = [];
   for (let k = 0; k < 15; k++) {
     const t = 0.08 + 0.84 * k / 14, cx = p.x + (q.x - p.x) * t, cy = p.y + (q.y - p.y) * t;
     let best = 0, bd = 0;
-    for (let d = -4; d <= 4; d += 0.5) {
+    for (let d = -reach; d <= reach; d += 0.5) {
       const x = Math.round(cx + nx * d), y = Math.round(cy + ny * d);
       if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;
       const m = mag[y * w + x]; if (m > best) { best = m; bd = d; }
@@ -147,11 +157,25 @@ function refineSide(E, p, q, thr) {
 }
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const maxCornerDist = (a, b) => Math.max(...a.map((p, i) => dist(p, b[i])));
+function rectOf(q) {
+  const xs = q.map(p => p.x), ys = q.map(p => p.y);
+  const r = { x: Math.min(...xs), y: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) }; r.w = r.x2 - r.x; r.h = r.y2 - r.y; return r;
+}
+export function bboxIoU(a, b) {
+  const A = rectOf(a), B = rectOf(b);
+  const iw = Math.max(0, Math.min(A.x2, B.x2) - Math.max(A.x, B.x)), ih = Math.max(0, Math.min(A.y2, B.y2) - Math.max(A.y, B.y));
+  const I = iw * ih; return I / (A.w * A.h + B.w * B.h - I || 1);
+}
 
 /** Best card quad in the frame (or null). Corners TL, TR, BR, BL. */
 export function detectQuad(E, o) {
+  // 14 strongest lines per direction first; if no card is found, widen to 24 (a barcode / text rows / finger edges on a
+  // low-contrast desk can outrank a faint card edge)
+  return detectQuadN(E, o, o.maxPerGroup || 14) || (o.wideSearch === false ? null : detectQuadN(E, o, o.maxPerGroupWide || 22));
+}
+function detectQuadN(E, o, maxPerGroup) {
   const { w, h } = E;
-  const thr = Math.max(10, percentile(E.mag, 0.85));
+  const thr = Math.max(o.minEdge || 7, percentile(E.mag, 0.85)); // 11h: floor 10 -> 7 (low-contrast desk)
   const lines = houghLines(E, thr);
   // keep the strongest lines of EACH orientation group, so long background lines (desk edge, wood grain) in one
   // direction cannot crowd out a small card's edges
@@ -160,12 +184,27 @@ export function detectQuad(E, o) {
     if (Math.abs(L.th - 90) <= 40) H.push(L);
     else V.push(L.th > 90 ? { th: L.th - 180, r: -L.r, v: L.v } : L);
   }
-  H = H.slice(0, o.maxPerGroup || 14); V = V.slice(0, o.maxPerGroup || 14);
+  H = H.slice(0, maxPerGroup); V = V.slice(0, maxPerGroup);
   const yAt = (L) => (L.r - (w / 2) * Math.cos(L.th * DEG)) / Math.sin(L.th * DEG);
   const xAt = (L) => (L.r - (h / 2) * Math.sin(L.th * DEG)) / Math.cos(L.th * DEG);
   H.sort((a, b) => yAt(a) - yAt(b)); V.sort((a, b) => xAt(a) - xAt(b));
   const oblique = o.mode === 'rightSide';
   const [alo, ahi] = oblique ? [0.9, 3.2] : [o.aspect * (1 - o.aspectTol), o.aspect * (1 + o.aspectTol)];
+  // support rules for one candidate quad -> { score, c, s } or null
+  const check = (c, g) => {
+    const [tl, tr, br, bl] = c;
+    const sides = [[tl, tr], [tr, br], [br, bl], [bl, tl]];
+    const s = sides.map(([a, b]) => support(E, a, b, thr));
+    const score = s[0] * g.top + s[1] * g.right + s[2] * g.bottom + s[3] * g.left;
+    const ms = Math.min(...s);
+    if (ms < o.minSupport) return null;
+    // both ends of every side must be real edges too: a long background line (wood grain, desk edge) that merely
+    // passes through one card edge extends past the card's corners, where the other side then has no edge
+    const endMiss = sides.filter(([a, b]) => support(E, a, b, thr, 0.05, 0.22) < o.minEndSupport || support(E, a, b, thr, 0.78, 0.95) < o.minEndSupport).length;
+    if (endMiss > (o.endMissOk ?? 1)) return null;
+    if (endMiss && ms < o.minSupport + 0.1 && !o.near) return null;
+    return { score, c, s };
+  };
   let best = null;
   for (let i = 0; i < H.length; i++) for (let j = i + 1; j < H.length; j++) {
     if (yAt(H[j]) - yAt(H[i]) < h * 0.06) continue;
@@ -175,17 +214,12 @@ export function detectQuad(E, o) {
       if (!tl || !tr || !br || !bl) continue;
       const c = [tl, tr, br, bl];
       if (c.some(p => p.x < 1 || p.y < 1 || p.x > w - 2 || p.y > h - 2)) continue;
+      if (o.near && maxCornerDist(c, o.near) > w * 0.15) continue;
       const g = quadGeometry(c);
       if (Math.abs(g.angleSum - 360) > 3 || g.cornerDev > (oblique ? 50 : 40)) continue;
       if (g.aspect < alo || g.aspect > ahi) continue;
-      const sides = [[tl, tr], [tr, br], [br, bl], [bl, tl]];
-      const s = sides.map(([a, b]) => support(E, a, b, thr));
-      if (Math.min(...s) < o.minSupport) continue;
-      // both ends of every side must be real edges too: a long background line (wood grain, desk edge) that merely
-      // passes through one card edge extends past the card's corners, where the other side then has no edge
-      if (sides.some(([a, b]) => support(E, a, b, thr, 0.05, 0.22) < o.minEndSupport || support(E, a, b, thr, 0.78, 0.95) < o.minEndSupport)) continue;
-      const score = s[0] * g.top + s[1] * g.right + s[2] * g.bottom + s[3] * g.left;
-      if (!best || score > best.score) best = { score, c, s };
+      const r = check(c, g);
+      if (r && (!best || r.score > best.score)) best = r;
     }
   }
   if (!best) return null;
@@ -202,39 +236,55 @@ export function detectQuad(E, o) {
 
 export class CardTracker {
   constructor(opts = {}) { this.o = { ...TRACK_DEFAULTS, ...opts }; this.reset(); }
-  reset() { this.cand = null; this.locked = false; this.lastDet = 0; this.smoothQ = null; this.hist = []; this.steadySince = 0; this.prevGray = null; }
+  reset() { this.cand = null; this.locked = false; this.lastDet = 0; this.smoothQ = null; this.hist = []; this.steadySince = 0; this.missed = 0; }
 
   analyze(img, ts) {
     const o = this.o, w = img.width, h = img.height;
     const E = signedSobel(img);
-    const diff = meanAbsDiff(E.gray, this.prevGray); this.prevGray = E.gray;
-    const det = detectQuad(E, o);
+    // the wider 24-line search is costly on a cluttered frame with no card: only on every other frame while searching
+    this.frameN = (this.frameN || 0) + 1;
+    let det = detectQuad(E, this.locked || this.cand || this.frameN % 2 === 0 ? o : { ...o, wideSearch: false });
+    // locked: if the normal search misses (finger over an edge, slight blur), retry near the locked quad with relaxed edge needs
+    if (this.locked && this.smoothQ && (!det || maxCornerDist(det.corners, this.smoothQ) > w * 0.15))
+      det = detectQuad(E, { ...o, minSupport: o.lockSupport, minEndSupport: o.lockEndSupport, endMissOk: 2, near: this.smoothQ }) || det;
     const metrics = {};
     const P = (k) => phrase(k);
     const out = (state, key, extra = {}) => ({ state, ...P(key), ready: false, metrics, progress: 0, ...extra });
     if (det) {
-      if (this.cand && maxCornerDist(det.corners, this.cand.q) <= o.lockTol * w) { this.cand.n++; this.cand.q = det.corners; }
-      else { this.cand = { q: det.corners, n: 1 }; this.locked = false; this.steadySince = 0; this.hist = []; }
-      this.lastDet = ts;
+      const same = this.cand && (maxCornerDist(det.corners, this.cand.q) <= o.lockTol * w || bboxIoU(det.corners, this.cand.q) >= o.lockIoU);
+      if (same) { this.cand.n++; this.cand.q = det.corners; }
+      else { this.cand = { q: det.corners, n: 1 }; this.locked = false; this.steadySince = 0; this.hist = []; this.smoothQ = null; }
+      this.lastDet = ts; this.missed = 0;
       if (this.cand.n >= o.lockFrames) this.locked = true;
       // frame-rate independent smoothing: the same settling time whether analysis runs at 14 fps or 4 fps
       const a = 1 - Math.pow(1 - o.smooth, Math.max(1, (ts - (this.lastSmooth || ts - 70)) / 70));
       this.lastSmooth = ts;
-      this.smoothQ = this.smoothQ && maxCornerDist(this.smoothQ, det.corners) < 0.12 * w
+      this.smoothQ = this.smoothQ && maxCornerDist(this.smoothQ, det.corners) < 0.15 * w
         ? this.smoothQ.map((p, i) => ({ x: p.x + (det.corners[i].x - p.x) * a, y: p.y + (det.corners[i].y - p.y) * a }))
         : det.corners.map(p => ({ ...p }));
-    } else if (ts - this.lastDet > o.loseMs) { this.cand = null; this.locked = false; this.smoothQ = null; this.hist = []; this.steadySince = 0; }
+    } else {
+      this.missed = (this.missed || 0) + 1;
+      if (this.missed > o.graceFrames && ts - this.lastDet > o.loseMs) { this.cand = null; this.locked = false; this.smoothQ = null; this.hist = []; this.steadySince = 0; }
+    }
     metrics.lock = this.cand ? this.cand.n : 0;
+    if (this.missed) metrics.miss = this.missed;
     const disp = this.locked ? this.smoothQ : null;
     const searchKey = o.mode === 'rightSide' ? 'card.rs.search' : 'card.track.search';
-    if (!this.locked || !det) { this.steadySince = 0; return out(this.locked ? 'steady' : 'search', this.locked ? 'card.steady' : searchKey, { quad: disp }); }
+    if (!this.locked) { this.steadySince = 0; return out('search', searchKey, { quad: disp }); }
+    if (!det) {
+      // grace period: keep the lock, the outline and the hold progress; just no capture on a frame without a detection
+      const held = this.steadySince ? ts - this.steadySince : 0;
+      return held ? { state: 'hold', ...P(o.mode === 'rightSide' ? 'card.rs.hold' : 'card.hold'), ready: false, metrics, progress: Math.min(0.95, held / o.steadyMs), quad: disp }
+        : out('steady', o.mode === 'rightSide' ? 'card.rs.steady' : 'card.steady', { quad: disp });
+    }
 
-    const q = det.corners, g = quadGeometry(q);
-    const xs = q.map(p => p.x), ys = q.map(p => p.y);
-    const rect = { x: Math.min(...xs), y: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) }; rect.w = rect.x2 - rect.x; rect.h = rect.y2 - rect.y;
+    // geometry / crop from the smoothed quad (hand shake averaged out); the raw detection only has to agree with it
+    const q = this.smoothQ, g = quadGeometry(q);
+    const rect = rectOf(q);
     const widthFrac = (g.top + g.bottom) / 2 / w;
     Object.assign(metrics, { wf: +widthFrac.toFixed(2), lr: +g.lr.toFixed(2), tb: +g.tb.toFixed(2), corner: +g.cornerDev.toFixed(1), qaspect: +g.aspect.toFixed(2), sup: det.support.map(s => +s.toFixed(2)).join(','), rms: det.rms === null ? null : +det.rms.toFixed(2) });
-    const ex = { rect, quad: disp, rawQuad: q };
+    const ex = { rect: rectOf(det.corners), quad: disp, rawQuad: det.corners }; // crop / deskew: this frame's real corners
+    metrics.raw = +(maxCornerDist(det.corners, q) / w).toFixed(3);
     const fail = (state, key) => { this.steadySince = 0; return out(state, key, ex); };
     const mg = 0.012 * w;
     if (q.some(p => p.x < mg || p.y < mg || p.x > w - mg || p.y > h - mg)) return fail('partial', o.mode === 'rightSide' ? 'card.rs.inframe' : 'card.partial');
@@ -249,21 +299,30 @@ export class CardTracker {
       if (Math.max(Math.abs(1 - g.lr), Math.abs(1 - g.tb)) > o.maxPerspective || g.cornerDev > o.maxCornerDevFlat) return fail('flat', 'card.flat');
     }
     // glare / sharpness inside the quad
-    const ix0 = Math.max(q[0].x, q[3].x) + rect.w * 0.06, ix1 = Math.min(q[1].x, q[2].x) - rect.w * 0.06;
-    const iy0 = Math.max(q[0].y, q[1].y) + rect.h * 0.08, iy1 = Math.min(q[2].y, q[3].y) - rect.h * 0.08;
+    const dq = det.corners, dr = ex.rect;
+    const ix0 = Math.max(dq[0].x, dq[3].x) + dr.w * 0.06, ix1 = Math.min(dq[1].x, dq[2].x) - dr.w * 0.06;
+    const iy0 = Math.max(dq[0].y, dq[1].y) + dr.h * 0.08, iy1 = Math.min(dq[2].y, dq[3].y) - dr.h * 0.08;
     const sharp = laplacianVariance(E.gray, w, h, ix0, iy0, ix1, iy1);
     const st = glareStats(E.gray, w, h, ix0, iy0, ix1, iy1, 250, o.glareRel);
     metrics.sharp = +sharp.toFixed(0); metrics.glare = +st.glareFrac.toFixed(3);
-    if (st.glareFrac > o.maxGlare) return fail('glare', 'card.glare');
-    if (sharp < o.minSharpness) return fail('blur', 'card.blur');
-    // steadiness (corners vs recent average)
-    let moved = diff > o.steadyDiffTol;
+    // a single soft / glary frame while holding (hand shake) does not restart the hold; 3 in a row do
+    const soft = (state, key) => {
+      this.softN = (this.softN || 0) + 1;
+      if (this.softN >= 3 || !this.steadySince) return fail(state, key);
+      return { state: 'hold', ...P(o.mode === 'rightSide' ? 'card.rs.hold' : 'card.hold'), ready: false, metrics, progress: Math.min(0.95, (ts - this.steadySince) / o.steadyMs), quad: disp };
+    };
+    if (st.glareFrac > o.maxGlare) return soft('glare', 'card.glare');
+    if (sharp < o.minSharpness) return soft('blur', 'card.blur');
+    this.softN = 0;
+    // steadiness: smoothed corners vs their recent average (tolerance ~5.5% of the frame width); per-frame sharpness
+    // above already rejects motion-blurred frames, so raw frame-to-frame motion is not used any more
+    let moved = false;
     if (this.hist.length) {
       const n = this.hist.length; let d = 0;
       for (let k = 0; k < 4; k++) { let ax = 0, ay = 0; for (const c of this.hist) { ax += c[k].x / n; ay += c[k].y / n; } d = Math.max(d, Math.hypot(q[k].x - ax, q[k].y - ay) / w); }
-      metrics.move = +d.toFixed(3); moved = moved || d > o.steadyTol;
+      metrics.move = +d.toFixed(3); moved = d > o.steadyTol;
     }
-    this.hist.push(q); if (this.hist.length > o.steadyWindow) this.hist.shift();
+    this.hist.push(q.map(p => ({ ...p }))); if (this.hist.length > o.steadyWindow) this.hist.shift();
     if (moved) { this.steadySince = 0; return out('steady', o.mode === 'rightSide' ? 'card.rs.steady' : 'card.steady', ex); }
     if (!this.steadySince) this.steadySince = ts;
     const held = ts - this.steadySince;

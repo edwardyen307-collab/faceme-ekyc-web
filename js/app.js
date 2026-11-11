@@ -1,9 +1,9 @@
-import { APP_VERSION } from './version.js?v=2026-11-11g';
-import { Camera } from './camera.js?v=2026-11-11g';
-import { createEngine } from './engines/index.js?v=2026-11-11g';
-import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11g';
-import { phrase } from './hints.js?v=2026-11-11g';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL, verifyOcrSide } from './upload.js?v=2026-11-11g';
+import { APP_VERSION } from './version.js?v=2026-11-11h';
+import { Camera } from './camera.js?v=2026-11-11h';
+import { createEngine } from './engines/index.js?v=2026-11-11h';
+import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11h';
+import { phrase } from './hints.js?v=2026-11-11h';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL, verifyOcrSide } from './upload.js?v=2026-11-11h';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -142,7 +142,8 @@ const ui = {
       els.detected.classList.toggle('on', state.kind !== 'tilt');
     } else els.detected.classList.remove('on');
     drawTrack(out.quadDisplay);
-    if (DEBUG) els.metrics.textContent = out.state + ' ' + JSON.stringify(out.metrics || {});
+    if (DEBUG) { const tr = window.__ekyc.trace || (window.__ekyc.trace = []); if (tr.length < 4000) tr.push({ t: Math.round(performance.now()), s: out.state, v: out.metrics && out.metrics.votes, why: out.metrics && out.metrics.why }); }
+    if (DEBUG) els.metrics.textContent = (out.sideDebug ? out.sideDebug + '\n' : '') + out.state + ' ' + JSON.stringify(out.metrics || {});
     window.__ekyc.last = { state: out.state, hint: els.hint.textContent, raw: out.hint, level: els.stage.dataset.level, dir: els.stage.dataset.dir, metrics: out.metrics };
   },
 };

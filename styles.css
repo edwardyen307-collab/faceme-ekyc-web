@@ -43,7 +43,7 @@ body.capturing main { flex:1 1 auto; min-height:0; }
 .flash { position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; }
 .flash.go { animation:flash .35s ease-out; }
 @keyframes flash { 0% { opacity:.85; } 100% { opacity:0; } }
-.metrics { position:absolute; left:6px; bottom:36px; margin:0; font-size:10px; background:rgba(0,0,0,.6); padding:4px; max-width:96%; white-space:pre-wrap; }
+.metrics { position:absolute; left:6px; right:6px; bottom:36px; margin:0; font-size:10px; line-height:1.25; background:rgba(0,0,0,.72); padding:4px; white-space:pre-wrap; overflow-wrap:anywhere; z-index:6; pointer-events:none; }
 .capture-bar { display:flex; gap:10px; justify-content:space-between; padding:10px 12px calc(env(safe-area-inset-bottom) + 10px); }
 .shots { display:grid; grid-template-columns:1fr 1fr; gap:10px; padding:12px; }
 .shots figure { margin:0; background:var(--card); border-radius:12px; padding:8px; }
@@ -197,7 +197,7 @@ details.forgery-fig summary { cursor:pointer; }
 .sheet .adv[open] summary::before { transform:rotate(90deg); }
 .sheet .adv summary::-webkit-details-marker { display:none; }
 
-/* ---- v2026-11-11g ---- */
+/* ---- v2026-11-11h ---- */
 .oblique-fig { margin:0 12px 12px; background:var(--card); border-radius:12px; padding:10px; }
 .oblique-fig figcaption { font-size:15px; font-weight:700; margin-bottom:8px; }
 .ostrip { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }

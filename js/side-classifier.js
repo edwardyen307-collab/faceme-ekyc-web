@@ -1,19 +1,21 @@
-// Front/back/other classifier for the Taiwan ID card. Each side must POSITIVELY match the TW ID layout (v11g):
-//   FRONT = pale tinted background (not white, not strongly coloured), no chip, a left label column with >= 3 text
-//           rows, an ID-number text row in the bottom-left band, no barcode, AND a portrait of the right size in
-//           the photo band on the right (checked last, it is the expensive part)
-//   BACK  = pale background, no saturated areas, no chip, >= 4 text rows with a left label column (parents /
-//           spouse / military service / birthplace / address), a REAL barcode (many thin coherent bars, not a
-//           line of big text) of the right width at the bottom, and no portrait
-//   UP*   = the same full match on the card rotated 180 degrees (only then the "upside down" hint is shown)
-//   OTHER = anything else (another card, a look-alike, uncertain). Nothing is captured unless a side matches.
-// NOTE: the bands below were set from the synthetic test cards and the general TW ID layout; tune on real cards.
-// The card is first perspective-corrected (deskewed) from its quad, so the same features work with the fixed
-// frame and with auto-tracking. Votes are only taken on good frames and the verdict must be stable over frames.
-import { loadImageLandmarker } from './face-checker.js?v=2026-11-11g';
-import { deskewDrawable } from './warp.js?v=2026-11-11g';
-import { CARD_ASPECT } from './card-detector.js?v=2026-11-11g';
-import { phrase } from './hints.js?v=2026-11-11g';
+// Front/back/other classifier for the Taiwan ID card (2005 design). v11h:
+//   FRONT = all of: portrait of the right size in the photo area (right), a left label column (>= 2 rows), a text row
+//           in the bottom-left band (發證日期), tinted pale card, no chip, no strict barcode.
+//   BACK  = weighted SCORE (real cards under phone cameras rarely pass an all-must-pass rule):
+//           text rows with a left label column (父母/配偶/役別/出生地/住址)  x3
+//           thin full-width ruling lines between the rows (TW ID back has 4)   x2
+//           1-D barcode in the lower part (bottom-left on the real card; position tolerant, blur tolerant) x3
+//           pale, not colourful card                                           x1
+//         back if score >= backMin AND (barcode or ruling lines) AND no portrait anywhere AND no chip.
+//   Colour tests are relative to the card's own background (white-balance / warm-light tolerant).
+//   UP*   = the same match on the card rotated 180 degrees (only then the "upside down" hint is shown).
+//   OTHER = anything else. Nothing is captured unless a side matches.
+// Layout reference: public MOI specimen (內政部戶政司「國民身分證真偽辨識資料」). Bands are fractions of the laminated
+// card (85.7 x 54 mm; the printed paper sits ~3.5% inside). Tune on real cards via ?debug=1 (side line in the overlay).
+import { loadImageLandmarker } from './face-checker.js?v=2026-11-11h';
+import { deskewDrawable } from './warp.js?v=2026-11-11h';
+import { CARD_ASPECT } from './card-detector.js?v=2026-11-11h';
+import { phrase } from './hints.js?v=2026-11-11h';
 
 export const SIDE_DEFAULTS = {
   intervalMs: 180,    // min time between checks
@@ -25,17 +27,20 @@ export const SIDE_DEFAULTS = {
   deskW: 960,
   // layout bands (fractions of the card)
   front: {
-    rows: { x: [0.03, 0.58], y: [0.13, 0.70], label: [0.03, 0.17], minRows: 3, minLabelRows: 3 },
+    rows: { x: [0.03, 0.62], y: [0.13, 0.95], label: [0.03, 0.17], minLabelRows: 2 },
     idRow: { x: [0.03, 0.64], y: [0.68, 0.95], minSpan: 0.22 },
-    bgChroma: [5, 32],                 // tinted, pale background (TW ID front is never plain white/grey)
-    photo: { cx: [0.64, 0.95], cy: [0.32, 0.80], h: [0.16, 0.6], minFit: 30 },
+    bgChroma: [0, 45],                 // pale background (tint varies with the light)
+    photo: { cx: [0.62, 0.95], cy: [0.25, 0.80], h: [0.16, 0.62], minFit: 30 },
+    maxSaturated: 0.08,                // flag / red seal are allowed
   },
   back: {
-    rows: { x: [0.03, 0.75], y: [0.04, 0.72], label: [0.03, 0.15], minRows: 4, minLabelRows: 3 },
-    bgChroma: [0, 22],
-    barcode: { y: [0.72, 0.99], cx: [0.25, 0.85], w: [0.15, 0.62], minBars: 12, minCoh: 0.8 },
+    rows: { x: [0.03, 0.78], y: [0.04, 0.74], label: [0.03, 0.2] },
+    lines: { y: [0.12, 0.8], band: [0.17, 0.76], x: [0.05, 0.95], minFrac: 0.72 },
+    barcode: { y: [0.5, 0.99], cx: [0.1, 0.62], w: [0.12, 0.72], strictW: [0.15, 0.62], minBars: 8, minCoh: 0.6 },
+    maxBgChroma: 40, maxSaturated: 0.06,
+    weights: { rows: 3, lines: 2, barcode: 3, bg: 1 }, minScore: 6,
   },
-  minBgLuma: 150, maxSaturated: 0.04, satChroma: 40, maxChip: 0.012,
+  minBgLuma: 95, satDev: 42, maxChip: 0.012,
 };
 
 const lumaAt = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
@@ -54,18 +59,28 @@ function half(img) { // 2x box downsample
   return o;
 }
 
-/** Colour statistics: background (pale pixels) chroma, saturated fraction, chip-like (gold/yellow block) fraction. */
+/**
+ * Colour statistics relative to the card's own background (so warm / cool light and the TW ID's orange-yellow tint
+ * do not count as "colour"): background = brightest half of the pixels; saturated = chroma far from the background;
+ * chip = a gold/yellow block clearly more yellow than the background in the left-middle of the card.
+ */
 export function colourStats(img, o) {
-  const d = img.data, W = img.width, H = img.height;
-  let n = 0, nb = 0, bgN = 0, bgC = 0, sat = 0, chip = 0, chipN = 0; const lum = [];
+  const d = img.data, W = img.width, H = img.height, px = [];
   for (let y = 2; y < H - 2; y += 2) for (let x = 2; x < W - 2; x += 2) {
-    const i = (y * W + x) * 4, L = lumaAt(d, i), C = chromaAt(d, i); n++; lum.push(L); if (y > H * 0.15 && x < W * 0.6) nb++;
-    if (L > o.minBgLuma) { bgN++; bgC += C; }
-    if (C > o.satChroma && y > H * 0.15 && x < W * 0.6) sat++; // body of the card (not the title band / photo)
-    if (x < W * 0.5) { chipN++; const cb = -0.1687 * d[i] - 0.3313 * d[i + 1] + 0.5 * d[i + 2], cr = 0.5 * d[i] - 0.4187 * d[i + 1] - 0.0813 * d[i + 2]; if (cb < -25 && cr > 8 && L > 110 && L < 235) chip++; }
+    const i = (y * W + x) * 4, L = lumaAt(d, i);
+    px.push([L, -0.1687 * d[i] - 0.3313 * d[i + 1] + 0.5 * d[i + 2], 0.5 * d[i] - 0.4187 * d[i + 1] - 0.0813 * d[i + 2], x / W, y / H]);
   }
-  lum.sort((a, b) => a - b);
-  return { bgChroma: bgN ? bgC / bgN : 0, bgFrac: bgN / n, medLuma: lum[lum.length >> 1] || 0, saturated: sat / Math.max(1, nb), chip: chip / Math.max(1, chipN) };
+  const ls = px.map(p => p[0]).sort((a, b) => a - b), med = ls[ls.length >> 1] || 0, hi = ls[Math.floor(ls.length * 0.5)];
+  let bcb = 0, bcr = 0, bn = 0;
+  for (const p of px) if (p[0] >= hi) { bcb += p[1]; bcr += p[2]; bn++; }
+  bcb /= Math.max(1, bn); bcr /= Math.max(1, bn);
+  let nb = 0, sat = 0, chip = 0, chipN = 0;
+  for (const [L, cb, cr, x, y] of px) {
+    const dev = Math.hypot(cb - bcb, cr - bcr);
+    if (y > 0.15 && x < 0.6) { nb++; if (dev > o.satDev) sat++; }
+    if (x < 0.5 && y > 0.28 && y < 0.85) { chipN++; if (cb - bcb < -28 && cr - bcr > 2 && cr - bcr < 45 && dev > 30 && L > 80 && L < 235) chip++; } // gold, not red
+  }
+  return { bgChroma: Math.hypot(bcb, bcr), medLuma: med, saturated: sat / Math.max(1, nb), chip: chip / Math.max(1, chipN) };
 }
 
 /** Text rows in a region of a grey image: runs of rows dense in strong horizontal transitions (text strokes). */
@@ -99,49 +114,102 @@ export function textRows(g, W, H, xr, yr, labelX, S = spread(g)) {
 }
 
 /**
- * Strict barcode test (grey, full-resolution deskewed card): inside the band, find rows with dense transitions,
- * then require many thin bars whose columns are coherent from top to bottom (a line of big text is not).
+ * 1-D barcode in the lower part of the card (grey, deskewed, ~960 px). Blur tolerant: barcode pixels have a strong
+ * horizontal gradient but almost no vertical change; dense areas of such pixels are grouped into a box, then the bars
+ * must be coherent from top to bottom (a row of text / digits / a QR code is not). Returns score 0 / 0.6 / 1.
  */
 export function findBarcode(g, W, H, cfg, S = spread(g)) {
-  const tThr = Math.max(7, 0.13 * S);
-  const y0 = Math.round(H * cfg.y[0]), y1 = Math.round(H * cfg.y[1]);
-  const tv = new Float32Array(H);
-  for (let y = y0; y < y1; y++) { let s = 0; const r = y * W; for (let x = 2; x < W; x++) if (Math.abs(g[r + x] - g[r + x - 2]) > tThr && Math.abs(g[r + x] - g[r + x - 1]) >= Math.abs(g[r + x - 1] - g[r + x - 2])) s++; tv[y] = s / W; }
-  // longest run of "busy" rows
-  let best = null, st = -1;
-  for (let y = y0; y <= y1; y++) {
-    const on = y < y1 && tv[y] > 0.04;
-    if (on && st < 0) st = y;
-    if (!on && st >= 0) { if (!best || y - st > best[1] - best[0]) best = [st, y]; st = -1; }
+  const res = { score: 0, strict: false, bars: 0, coh: 0, cx: 0, cy: 0, w: 0, h: 0 };
+  const y0 = Math.max(2, Math.round(H * cfg.y[0])), y1 = Math.min(H - 3, Math.round(H * cfg.y[1]));
+  const t = Math.max(6, 0.08 * S), step = 4, gw = Math.ceil(W / step), gh = Math.ceil((y1 - y0) / step);
+  const cnt = new Float32Array(gw * gh);
+  for (let y = y0; y < y1; y++) {
+    const r = y * W, gy = ((y - y0) / step) | 0;
+    for (let x = 1; x < W - 1; x++) {
+      const hm = Math.abs(g[r + x + 1] - g[r + x - 1]);
+      if (hm > t && Math.abs(g[r + 2 * W + x] - g[r - 2 * W + x]) < 0.5 * hm) cnt[gy * gw + ((x / step) | 0)]++;
+    }
   }
-  const res = { found: false, bars: 0, coh: 0, cx: 0, w: 0, rows: best ? (best[1] - best[0]) / H : 0 };
-  if (!best || best[1] - best[0] < H * 0.035) return res;
-  const ra = best[0] + Math.round((best[1] - best[0]) * 0.15), rb = best[1] - Math.round((best[1] - best[0]) * 0.15);
-  const m = new Float32Array(W); const rowTv = new Float32Array(W);
-  for (let y = ra; y < rb; y++) { const r = y * W; for (let x = 0; x < W; x++) { m[x] += g[r + x] / (rb - ra); if (x) rowTv[x] += Math.abs(g[r + x] - g[r + x - 1]) / (rb - ra); } }
-  // extent of the bar area: columns with strong local contrast in the column means
-  const busy = new Uint8Array(W);
-  for (let x = 6; x < W - 6; x++) { let lo = 255, hi = 0; for (let k = -6; k <= 6; k++) { lo = Math.min(lo, m[x + k]); hi = Math.max(hi, m[x + k]); } busy[x] = hi - lo > 0.25 * S ? 1 : 0; }
-  // longest busy run, bridging gaps <= 1.5% of the width
-  const maxGap = Math.round(W * 0.015); let bx = null, s = -1, gap = 0;
-  for (let x = 0; x <= W; x++) {
-    if (x < W && busy[x]) { if (s < 0) s = x; gap = 0; }
-    else if (s >= 0) { gap++; if (gap > maxGap || x === W) { const e = x - gap + 1; if (!bx || e - s > bx[1] - bx[0]) bx = [s, e]; s = -1; gap = 0; } }
+  // density over ~ (0.05 W x 0.05 H) windows, thresholded into a grid
+  const rx = Math.max(1, Math.round(W * 0.025 / step)), ry = Math.max(1, Math.round(H * 0.025 / step));
+  const on = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) for (let gx = 0; gx < gw; gx++) {
+    let s = 0, n = 0;
+    for (let yy = Math.max(0, gy - ry); yy <= Math.min(gh - 1, gy + ry); yy++) for (let xx = Math.max(0, gx - rx); xx <= Math.min(gw - 1, gx + rx); xx++) { s += cnt[yy * gw + xx]; n++; }
+    if (s / (n * step * step) > 0.2) on[gy * gw + gx] = 1;
   }
-  if (!bx) return res;
-  // a TW ID barcode stands alone: a wide striped area (full-width label barcode, ruled lines) broken into pieces is not it
-  let outside = 0; const m0 = bx[0] - maxGap * 3, m1 = bx[1] + maxGap * 3;
-  for (let x = 0; x < W; x++) if (busy[x] && (x < m0 || x > m1)) outside++;
-  res.outside = +(outside / Math.max(1, bx[1] - bx[0])).toFixed(2);
-  if (outside > 0.35 * (bx[1] - bx[0])) return res;
-  let bars = 0, sc = 0, sr = 0, dir = 0;
-  for (let x = bx[0] + 1; x < bx[1]; x++) {
-    const dlt = m[x] - m[x - 1]; sc += Math.abs(dlt); sr += rowTv[x];
-    if (Math.abs(dlt) > 0.035 * S) { const nd = Math.sign(dlt); if (nd !== dir) { if (nd < 0) bars++; dir = nd; } }
+  // components -> evaluate each plausible box, keep the best
+  const seen = new Uint8Array(gw * gh);
+  for (let i0 = 0; i0 < on.length; i0++) {
+    if (!on[i0] || seen[i0]) continue;
+    let xa = 1e9, xb = -1, ya = 1e9, yb = -1, n = 0; const st = [i0]; seen[i0] = 1;
+    while (st.length) {
+      const i = st.pop(), gx = i % gw, gy = (i / gw) | 0; n++;
+      xa = Math.min(xa, gx); xb = Math.max(xb, gx); ya = Math.min(ya, gy); yb = Math.max(yb, gy);
+      for (const j of [i - 1, i + 1, i - gw, i + gw]) if (j >= 0 && j < on.length && on[j] && !seen[j] && Math.abs((j % gw) - gx) <= 1) { seen[j] = 1; st.push(j); }
+    }
+    const bx0 = xa * step, bx1 = (xb + 1) * step, by0 = y0 + ya * step, by1 = y0 + (yb + 1) * step;
+    const w = (bx1 - bx0) / W, h = (by1 - by0) / H;
+    // all bar-like cells in the middle rows of this box: a TW ID barcode stands alone (labels with a full-width code don't)
+    let cols = 0; const ga = ya + Math.round((yb - ya) * 0.3), gb = yb - Math.round((yb - ya) * 0.3);
+    for (let gx = 0; gx < gw; gx++) for (let gy = ga; gy <= gb; gy++) if (on[gy * gw + gx]) { cols++; break; }
+    const spanAll = cols * step / W;
+    if (w < cfg.w[0] * 0.8 || h < 0.035 || h > 0.3) continue;
+    // coherence + bars on the middle 60% of the box
+    const ra = by0 + Math.round((by1 - by0) * 0.2), rb = by1 - Math.round((by1 - by0) * 0.2);
+    const m = new Float32Array(bx1 - bx0); let rowTv = 0;
+    for (let y = ra; y < rb; y++) { const r = y * W; for (let x = bx0; x < bx1; x++) { m[x - bx0] += g[r + x] / (rb - ra); if (x > bx0) rowTv += Math.abs(g[r + x] - g[r + x - 1]) / (rb - ra); } }
+    let colTv = 0, lo = 255, hi = 0; for (let k = 1; k < m.length; k++) colTv += Math.abs(m[k] - m[k - 1]);
+    for (const v of m) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    const coh = Math.min(1, colTv / Math.max(1, rowTv));
+    let bars = 0, dir = 1, ext = m[0]; const prom = Math.max(4, 0.12 * (hi - lo));
+    for (let k = 1; k < m.length; k++) {
+      if (dir >= 0 && m[k] > ext) ext = m[k]; else if (dir <= 0 && m[k] < ext) ext = m[k];
+      if (dir >= 0 && ext - m[k] > prom) { if (dir > 0) bars++; dir = -1; ext = m[k]; }
+      else if (dir <= 0 && m[k] - ext > prom) { dir = 1; ext = m[k]; }
+    }
+    // vertical uniformity: bars look the same from top to bottom (text strokes do not): mean column std vs profile std
+    let vs = 0, mm = 0; for (const v of m) mm += v / m.length;
+    let ps = 0; for (const v of m) ps += (v - mm) * (v - mm) / m.length; ps = Math.sqrt(ps);
+    for (let x = bx0; x < bx1; x += 2) { let a = 0, a2 = 0, n2 = 0; for (let y = ra; y < rb; y++) { const v = g[y * W + x]; a += v; a2 += v * v; n2++; } vs += Math.sqrt(Math.max(0, a2 / n2 - (a / n2) ** 2)) / Math.ceil((bx1 - bx0) / 2); }
+    const vr = vs / Math.max(1, ps);
+    let score = 0;
+    if (spanAll > cfg.w[1] + 0.1) { if (!res.score && w * h > res.w * res.h) Object.assign(res, { bars, wide: +spanAll.toFixed(2), w: +w.toFixed(2), h: +h.toFixed(2) }); continue; }
+    const strict = bars >= cfg.minBars && coh >= cfg.minCoh + 0.1 && vr <= 0.45 && h >= 0.075 && w >= cfg.strictW[0] && w <= cfg.strictW[1];
+    if (bars >= cfg.minBars && coh >= cfg.minCoh && vr <= 0.45 && h >= 0.07 && w >= cfg.w[0] && w <= cfg.w[1]) score = 1;
+    else if (bars >= 4 && coh >= cfg.minCoh && vr <= 0.6 && h >= 0.055 && w >= cfg.w[0] * 0.8 && w <= cfg.w[1] + 0.08) score = 0.6;
+    if (score > res.score || (score === res.score && w > res.w && score > 0)) Object.assign(res, { score, strict, bars, vr: +vr.toFixed(2), coh: +coh.toFixed(2), cx: +((bx0 + bx1) / 2 / W).toFixed(2), cy: +((by0 + by1) / 2 / H).toFixed(2), w: +w.toFixed(2), h: +h.toFixed(2) });
+    else if (!res.score && w * h > res.w * res.h) Object.assign(res, { bars, vr: +vr.toFixed(2), coh: +coh.toFixed(2), cx: +((bx0 + bx1) / 2 / W).toFixed(2), cy: +((by0 + by1) / 2 / H).toFixed(2), w: +w.toFixed(2), h: +h.toFixed(2) });
   }
-  Object.assign(res, { bars, coh: Math.min(1, sc / Math.max(1, sr)), cx: (bx[0] + bx[1]) / 2 / W, w: (bx[1] - bx[0]) / W });
-  res.found = bars >= cfg.minBars && res.coh >= cfg.minCoh && res.w >= cfg.w[0] && res.w <= cfg.w[1] && res.cx >= cfg.cx[0] && res.cx <= cfg.cx[1];
   return res;
+}
+
+/** Thin horizontal ruling lines across most of the card width (the TW ID back separates its rows with 4 of them). */
+export function ruleLines(g, W, H, cfg, S = spread(g)) {
+  const t = Math.max(5, 0.06 * S), x0 = Math.round(W * cfg.x[0]), x1 = Math.round(W * cfg.x[1]);
+  const y0 = Math.max(3, Math.round(H * cfg.y[0])), y1 = Math.min(H - 4, Math.round(H * cfg.y[1]));
+  const fr = new Float32Array(H);
+  for (let y = y0 - 8; y < y1 + 8; y++) {
+    if (y < 3 || y >= H - 3) continue;
+    // longest continuous run of edge columns (gaps up to 1.5% of the width bridged): a ruling line, not scattered text
+    let best = 0, run = 0, gap = 0; const maxGap = Math.max(2, Math.round(W * 0.015));
+    for (let x = x0; x < x1; x++) {
+      const i = y * W + x;
+      if (Math.abs(g[i + 2 * W] - g[i - 2 * W]) > t || Math.abs(g[i + W] - g[i - W]) > t) { run += gap + 1; gap = 0; if (run > best) best = run; }
+      else if (run) { if (++gap > maxGap) { run = 0; gap = 0; } }
+    }
+    fr[y] = best / (x1 - x0);
+  }
+  const lines = []; const gap = Math.max(4, Math.round(H * 0.035)), side = Math.max(5, Math.round(H * 0.018));
+  for (let y = y0; y < y1; y++) {
+    if (fr[y] < cfg.minFrac) continue;
+    // thin: falls off quickly above and below (a text row stays busy over its whole height)
+    const away = Math.min(Math.max(fr[y - side] || 0, fr[y - side - 1] || 0), Math.max(fr[y + side] || 0, fr[y + side + 1] || 0));
+    if (away > 0.6 * fr[y]) continue;
+    if (lines.length && y - lines[lines.length - 1] < gap) continue;
+    lines.push(y);
+  }
+  return lines.map(y => +(y / H).toFixed(2));
 }
 
 export class SideClassifier {
@@ -187,48 +255,79 @@ export class SideClassifier {
     const f = { label: 'other' };
     const up = this._match(desk, f, '');
     if (up) { f.label = up; return f; }
+    if (f.face) return f; // a portrait upright -> never an upside-down back
     const rot = rotate180(desk);
     const dn = this._match(rot, f, 'r_');
+    if (dn === 'back') {
+      // MediaPipe misses upside-down faces: check the upright image for a portrait before calling it an upside-down back
+      const c = this.canvas; c.width = desk.width; c.height = desk.height; c.getContext('2d').putImageData(desk, 0, 0);
+      if (this._face(c, 0.45) || this._face(c, 0)) { f.r_why = 'face-upright'; return f; }
+    }
     if (dn) f.label = dn === 'front' ? 'upFront' : 'upBack';
     return f;
   }
-  // full positive match of one orientation -> 'front' | 'back' | null; records the reasons in f
+  // positive match of one orientation -> 'front' | 'back' | null; records feature values / scores in f
   _match(desk, f, pre) {
     const o = this.o, small = half(desk), g = gray(small), W = small.width, H = small.height;
     const col = colourStats(small, o);
     f[pre + 'col'] = { bg: +col.bgChroma.toFixed(1), sat: +col.saturated.toFixed(3), chip: +col.chip.toFixed(3), lum: Math.round(col.medLuma) };
     if (col.chip > o.maxChip) { f[pre + 'why'] = 'chip'; return null; }
-    if (col.saturated > o.maxSaturated) { f[pre + 'why'] = 'colourful'; return null; }
     if (col.medLuma < o.minBgLuma) { f[pre + 'why'] = 'dark'; return null; }
-    const G = gray(desk), bc = findBarcode(G, desk.width, desk.height, o.back.barcode);
-    f[pre + 'bc'] = { ok: bc.found, bars: bc.bars, coh: +bc.coh.toFixed(2), cx: +bc.cx.toFixed(2), w: +bc.w.toFixed(2) };
-    // FRONT candidate
+    const G = gray(desk), S = spread(G), bc = findBarcode(G, desk.width, desk.height, o.back.barcode, S);
+    f[pre + 'bc'] = bc;
+    // FRONT candidate (all must pass; the portrait is checked last)
     const fr = o.front, rowsF = textRows(g, W, H, fr.rows.x, fr.rows.y, fr.rows.label);
     const labF = rowsF.filter(r => r.label > 0.04).length;
     const idRows = textRows(g, W, H, fr.idRow.x, fr.idRow.y, fr.idRow.x).filter(r => r.span >= fr.idRow.minSpan);
-    f[pre + 'front'] = { rows: rowsF.length, label: labF, id: idRows.length, bgOk: col.bgChroma >= fr.bgChroma[0] && col.bgChroma <= fr.bgChroma[1] };
-    const frontLayout = !bc.found && rowsF.length >= fr.rows.minRows && labF >= fr.rows.minLabelRows && idRows.length >= 1 && f[pre + 'front'].bgOk;
-    // BACK candidate
-    const bk = o.back, rowsB = textRows(g, W, H, bk.rows.x, bk.rows.y, bk.rows.label);
-    const labB = rowsB.filter(r => r.label > 0.04).length;
-    f[pre + 'back'] = { rows: rowsB.length, label: labB, bgOk: col.bgChroma >= bk.bgChroma[0] && col.bgChroma <= bk.bgChroma[1] };
-    const backLayout = bc.found && rowsB.length >= bk.rows.minRows && labB >= bk.rows.minLabelRows && f[pre + 'back'].bgOk;
+    const bgF = col.bgChroma >= fr.bgChroma[0] && col.bgChroma <= fr.bgChroma[1];
+    f[pre + 'front'] = { label: labF, id: idRows.length, bgOk: bgF };
+    const frontLayout = !bc.strict && bc.score < 0.6 && labF >= fr.rows.minLabelRows && idRows.length >= 1 && bgF && col.saturated <= fr.maxSaturated;
+    // BACK candidate (weighted score)
+    const bk = o.back, wt = bk.weights;
+    const rowsB = textRows(g, W, H, bk.rows.x, bk.rows.y, bk.rows.label), labB = rowsB.filter(r => r.label > 0.04).length;
+    const raw = ruleLines(g, W, H, bk.lines);
+    // TW ID back: 3-5 ruling lines between the rows, regularly spaced (>= 8% of the card height apart); a list / form
+    // with many lines or boxes (top + bottom edges close together) is not counted
+    const lines = raw.filter(y => y >= bk.lines.band[0] && y <= bk.lines.band[1]);
+    const regular = raw.length <= 6 && lines.every((y, i) => i === 0 || y - lines[i - 1] >= 0.08);
+    const nL = regular ? lines.length : 0;
+    const sRows = Math.min(1, Math.max(0, (labB - 1) / 3)), sLines = Math.min(1, Math.max(0, (nL - 1) / 3)), sBc = bc.score;
+    const sBg = col.saturated <= bk.maxSaturated && col.bgChroma <= bk.maxBgChroma ? 1 : (col.saturated <= bk.maxSaturated * 2 ? 0.5 : 0);
+    const score = wt.rows * sRows + wt.lines * sLines + wt.barcode * sBc + wt.bg * sBg;
+    const bcLeft = bc.cx >= bk.barcode.cx[0] && bc.cx <= bk.barcode.cx[1] && bc.cy >= 0.62;
+    // evidence paths: barcode + >= 2 ruling lines | >= 3 ruling lines (barcode unreadable: glare / blur) |
+    //                 a clear barcode where the TW ID has it + >= 4 labelled rows (lines too faint)
+    const path = (sBc >= 0.6 && nL >= 2) ? 'bc+lines' : (nL >= 3 ? 'lines' : (sBc === 1 && bcLeft && labB >= 4 ? 'bc+rows' : ''));
+    const backLayout = !!path && labB >= 3 && score >= bk.minScore && col.saturated <= bk.maxSaturated * 2.5;
+    f[pre + 'back'] = { score: +score.toFixed(1), rows: labB, lines: nL, rawLines: raw.length, bc: sBc, bg: sBg, path, ok: backLayout };
     if (!frontLayout && !backLayout) { f[pre + 'why'] = 'layout'; return null; }
-    // portrait (expensive): required for the front, forbidden for the back
+    // portrait (expensive): required for the front; forbidden anywhere on the back
     const c = this.canvas; c.width = desk.width; c.height = desk.height; c.getContext('2d').putImageData(desk, 0, 0);
-    const face = this._face(c);
+    const face = this._face(c, 0.45);
     const p = fr.photo;
     const okPhoto = face && face.fit >= p.minFit && face.cx >= p.cx[0] && face.cx <= p.cx[1] && face.cy >= p.cy[0] && face.cy <= p.cy[1] && face.h >= p.h[0] && face.h <= p.h[1];
     f[pre + 'face'] = face ? { cx: +face.cx.toFixed(2), cy: +face.cy.toFixed(2), h: +face.h.toFixed(2), fit: Math.round(face.fit), ok: !!okPhoto } : null;
     if (frontLayout && okPhoto) return 'front';
-    if (backLayout && !face) return 'back';
+    if (backLayout && !face) {
+      const left = this._face(c, 0); // a portrait on the left (other cards) is not a TW ID back either
+      if (!left) return 'back';
+      f[pre + 'faceLeft'] = true;
+    }
     f[pre + 'why'] = frontLayout ? 'photo' : 'face-on-back';
     return null;
   }
+  /** One-line summary of the last check for the ?debug=1 overlay. */
+  debugText() {
+    const f = this.lastFeat; if (!f) return 'side: -';
+    const b = f.back || {}, bc = f.bc || {}, c = f.col || {}, fr = f.front || {}, fa = f.face;
+    return `side ${f.label} [${this.summary}] why=${f.why || '-'}\n` +
+      `back score ${b.score ?? '-'}/${this.o.back.minScore} ${b.ok ? 'OK' : 'no'} path=${b.path || '-'} rows=${b.rows ?? '-'} lines=${b.lines ?? '-'}(${b.rawLines ?? '-'}) bc=${b.bc ?? '-'}(bars ${bc.bars ?? '-'} coh ${bc.coh ?? '-'} w ${bc.w ?? '-'} @${bc.cx ?? '-'},${bc.cy ?? '-'}) bg=${b.bg ?? '-'}\n` +
+      `col bg=${c.bg} sat=${c.sat} chip=${c.chip} lum=${c.lum} | front label=${fr.label ?? '-'} id=${fr.id ?? '-'} bgOk=${fr.bgOk ?? '-'} face=${fa ? `${fa.cx},${fa.cy} h${fa.h} fit${fa.fit} ${fa.ok ? 'ok' : 'x'}` : '-'}`;
+  }
   // portrait in the right part of the card (x 0.45-1). Box in card coords + fit quality (dark eyes on brighter skin;
   // the mesh is fitted upright even on an upside-down face, so a low fit means "not a proper upright portrait").
-  _face(src) {
-    const W = src.width, H = src.height, x0 = 0.45, cw = 0.55;
+  _face(src, x0 = 0.45) {
+    const W = src.width, H = src.height, cw = 0.55;
     const outW = 256, outH = Math.round(outW * H / (W * cw));
     const c = this.crop; c.width = outW; c.height = outH;
     const g = c.getContext('2d', { willReadFrequently: true });

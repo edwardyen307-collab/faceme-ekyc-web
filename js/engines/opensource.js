@@ -1,15 +1,15 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11g):
+// Results (v2026-11-11h):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector, CARD_ASPECT, quadGeometry } from '../card-detector.js?v=2026-11-11g';
-import { CardTracker } from '../card-tracker.js?v=2026-11-11g';
-import { deskewBlob } from '../warp.js?v=2026-11-11g';
-import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11g';
-import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11g';
-import { phrase } from '../hints.js?v=2026-11-11g';
+import { CardDetector, CARD_ASPECT, quadGeometry } from '../card-detector.js?v=2026-11-11h';
+import { CardTracker } from '../card-tracker.js?v=2026-11-11h';
+import { deskewBlob } from '../warp.js?v=2026-11-11h';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11h';
+import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11h';
+import { phrase } from '../hints.js?v=2026-11-11h';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -101,6 +101,7 @@ export class OpenSourceEngine {
         out.metrics.side = verdict || '?'; out.metrics.votes = sideCls.summary;
         const lf = sideCls.lastFeat;
         if (lf) { out.metrics.why = lf.why || lf.label; out.metrics.bc = lf.bc && lf.bc.bars; out.metrics.face = lf.face ? lf.face.ok : null; }
+        out.sideDebug = sideCls.debugText(); // ?debug=1: per-feature side scores (screenshot this if a real card fails)
         const bad = sideMismatchKey(ctx.side, verdict);
         if (bad && quadVideo) {
           // wrong side / not this document in view: never capture it (manual press included); drop anything collected

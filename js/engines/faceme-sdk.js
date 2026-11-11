@@ -14,8 +14,8 @@
 // Enable with ?engine=faceme&sdk=<url of faceme-web-sdk.js>  (default ./sdk/faceme-web-sdk.js;
 // models are expected in <sdk dir>/res unless &sdkRes=<path> is given).
 
-import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11g';
-import { phrase } from '../hints.js?v=2026-11-11g';
+import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11h';
+import { phrase } from '../hints.js?v=2026-11-11h';
 
 // eKYC Console OCR `type` -> SDK idCardStep. Types without an auto-capture step fall back to the
 // open-source engine (the SDK only offers manual captureImage via 'front_g').
@@ -154,7 +154,7 @@ export class FaceMeSdkEngine {
       if (verdict === ctx.side) return res;
       console.warn('SDK card capture rejected by side check', verdict, sideCls.summary, sideCls.lastFeat);
       if (!ctx.camera.stream) { try { await ctx.camera.open('environment'); } catch (_) {} }
-      ctx.ui.update({ state: 'wrongside', ...phrase(ctx.side === 'front' && sideMismatchKey('front', verdict) !== 'card.upsideDown' ? 'card.sdkNotFront' : (sideMismatchKey(ctx.side, verdict) || 'card.notBack')), progress: 0, metrics: { side: verdict, votes: sideCls.summary } }, null, null, true);
+      ctx.ui.update({ state: 'wrongside', ...phrase(ctx.side === 'front' && sideMismatchKey('front', verdict) !== 'card.upsideDown' ? 'card.sdkNotFront' : (sideMismatchKey(ctx.side, verdict) || 'card.notBack')), progress: 0, metrics: { side: verdict, votes: sideCls.summary }, sideDebug: sideCls.debugText() }, null, null, true);
       await new Promise(r => setTimeout(r, 2200));
     }
   }
