@@ -235,6 +235,68 @@ def real_feeds():
         f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, cy - oc.height // 2), om); fr.append(exposure(f))
     write(fr, 'card-back-real-tilt')
 
+def place_rot(bg, card, mask, wpx, cx, cy, angle=0.0, jitter=None):
+    hpx = int(wpx * 540 / 856)
+    c = card.resize((wpx, hpx), Image.LANCZOS).convert('RGBA'); c.putalpha(mask.resize((wpx, hpx)))
+    if angle: c = c.rotate(angle, expand=True, resample=Image.BICUBIC)
+    f = bg.copy(); f.paste(c, (int(cx - c.width / 2), int(cy - c.height / 2)), c)
+    return f
+
+def make_bank_card():
+    """Non-ID card: colourful bank-card-like design (chip, big digits, logo), no portrait, no barcode."""
+    cw, ch = 856, 540
+    card = Image.new('RGB', (cw, ch))
+    d = ImageDraw.Draw(card)
+    for x in range(cw):
+        t = x / cw; d.line([(x, 0), (x, ch)], fill=(int(30 + 120 * t), int(40 + 30 * t), int(170 - 60 * t)))
+    d.ellipse([560, -120, 980, 300], fill=(210, 80, 140))
+    d.rounded_rectangle([80, 190, 200, 280], radius=14, fill=(214, 180, 90))
+    d.text((60, 40), '測試銀行 SAMPLE BANK', font=font(40), fill='white')
+    d.text((80, 320), '1234  5678  9012  3456', font=font(52), fill=(240, 240, 240))
+    d.text((80, 430), 'TEST CARDHOLDER   12/30', font=font(34), fill=(230, 230, 230))
+    d.ellipse([650, 400, 740, 490], fill=(235, 60, 50)); d.ellipse([700, 400, 790, 490], fill=(250, 170, 40))
+    mask = Image.new('L', (cw, ch), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=36, fill=255)
+    return card, mask
+
+def make_card_photo_left():
+    """Other ID-like card with the portrait on the LEFT (e.g. some licences / other countries' IDs)."""
+    card, mask = make_card()
+    c2 = Image.new('RGB', card.size, (226, 236, 220)); d = ImageDraw.Draw(c2)
+    d.rectangle([0, 0, 856, 70], fill=(30, 120, 80)); d.text((30, 12), '其他證件樣本 OTHER CARD', font=font(38), fill='white')
+    face = card.crop((590, 150, 820, 456)); c2.paste(face, (36, 150))
+    y = 120
+    for k, v in (('姓名', '王測試'), ('號碼', 'Z99-000-111'), ('有效', '2030-01-01')):
+        d.text((320, y), k, font=font(30), fill=(70, 70, 70)); d.text((440, y), v, font=font(34), fill=(10, 10, 10)); y += 80
+    return c2, mask
+
+def track_feeds():
+    """Auto-tracking (自動追拍) feeds: card anywhere in the frame, rotated, small, moving."""
+    bg = background(); front = make_card(); back = make_card_back_real()
+    fr = []
+    for i in range(220):
+        if i < 25: t = 0.0
+        elif i < 70: t = (i - 25) / 45.0
+        else: t = 1.0
+        t = t * t * (3 - 2 * t)
+        wpx = int(220 + t * 220); cx = 150 + t * (W / 2 + 10 - 150); cy = 260 + t * (H * 0.45 - 260); ang = 10 - 6 * t
+        fr.append(place_rot(bg, *front, wpx, cx, cy, ang))
+    write(fr, 'card-track-move')
+    write([place_rot(bg, *front, 230, 160, 280, 8) for _ in range(30)], 'card-track-small')
+    write([exposure(place_rot(bg, *back, 440, W / 2 - 15, H * 0.5, -5)) for _ in range(30)], 'card-track-back')
+    write([place_rot(bg, *front, 440, W / 2 - 15, H * 0.5, -5) for _ in range(30)], 'card-track-front')
+    oc, om = card_oblique(*front, 430, 1.0)
+    fr = []
+    for _ in range(30):
+        f = bg.copy(); f.paste(oc, (int(W / 2 + 25 - oc.width / 2), int(H * 0.5 - oc.height / 2)), om); fr.append(f)
+    write(fr, 'card-track-tilt')
+    cy = int(H * 0.42)
+    write([place(bg, *make_bank_card(), 450, W // 2, cy) for _ in range(30)], 'card-bank')
+    write([place(bg, *make_card_photo_left(), 450, W // 2, cy) for _ in range(30)], 'card-photo-left')
+    write([place_rot(bg, *front, 450, W // 2, cy, 180) for _ in range(30)], 'card-upside-down')
+    write([place_rot(bg, *make_card_photo_left(), 440, W / 2 - 10, H * 0.47, -4) for _ in range(30)], 'card-track-photo-left')
+    write([place_rot(bg, *make_bank_card(), 440, W / 2 + 10, H * 0.48, 4) for _ in range(30)], 'card-track-bank')
+
 def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     img = Image.open(os.path.join(HERE, 'feeds', src)).convert('RGB')
     if zoom != 1.0:  # zoom<1: face smaller (user too far) - pad with wall colour
@@ -259,6 +321,8 @@ def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == 'new':
         real_feeds(); face_feed('face-profile.jpg', 'face-profile', n=30); sys.exit()
+    if len(sys.argv) > 2 and sys.argv[2] == 'track':
+        track_feeds(); sys.exit()
     if len(sys.argv) > 2 and sys.argv[2] == 'new0':
         phase_feeds(); face_feed('face.jpg', 'face-far-offset', shift_x=60, zoom=0.55, n=30); sys.exit()
     card_feed()
@@ -266,6 +330,7 @@ if __name__ == '__main__':
     card_forgery_feed()
     phase_feeds()
     real_feeds()
+    track_feeds()
     face_feed('face.jpg', 'face')
     face_feed('face-mask.jpg', 'face-mask')
     face_feed('face.jpg', 'face-offset', shift_x=150, n=30)   # face to the right of the raw frame

@@ -68,6 +68,14 @@ export class Camera {
     return { x, y: r.y * t.s + t.oy, w, h: r.h * t.s };
   }
 
+  /** Video pixel point -> display point (for the auto-tracking quad). */
+  videoPointToDisplay(p) {
+    const t = this.transform();
+    let x = p.x * t.s + t.ox;
+    if (this.mirrored) x = t.cw - x;
+    return { x, y: p.y * t.s + t.oy };
+  }
+
   /** Copy a region of the current video frame (video px) into an ImageData of width outW. */
   sample(region, outW, canvas) {
     const v = this.video;
@@ -80,7 +88,10 @@ export class Camera {
   }
 
   /** Grab a JPEG of a region of the current frame at full resolution (never mirrored). */
-  async grab(region, maxW = 1600, quality = 0.92) {
+  async grab(region, maxW = 1600, quality = 0.92) { return (await this.grabMeta(region, maxW, quality)).blob; }
+
+  /** Like grab(), also returns the clamped video region and the scale used (crop px = (video px - region.x) * scale). */
+  async grabMeta(region, maxW = 1600, quality = 0.92) {
     const v = this.video;
     const r = clampRect(region || { x: 0, y: 0, w: v.videoWidth, h: v.videoHeight }, v.videoWidth, v.videoHeight);
     const scale = Math.min(1, maxW / r.w);
@@ -89,7 +100,7 @@ export class Camera {
     c.getContext('2d').drawImage(v, r.x, r.y, r.w, r.h, 0, 0, c.width, c.height);
     const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', quality));
     c.width = c.height = 0;
-    return blob;
+    return { blob, region: r, scale };
   }
 }
 

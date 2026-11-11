@@ -36,6 +36,17 @@ export const PHRASES = {
   'card.sideCheck': P('good', 'ok', '很好，請保持不動'),
   'card.rs.near': P('adjust', 'farther', '太近了，請把手機拿遠一點，證件四角都要看得到'),
   'card.rs.small': P('adjust', 'closer', '證件太小了，請把手機靠近一點（保持斜角）'),
+  // positive side features / wrong document
+  'card.notFront': P('problem', 'flip', '這不是身分證正面，請改拿身分證有照片的那面'),
+  'card.notBack': P('problem', 'flip', '這不是身分證背面，請把身分證翻到背面'),
+  'card.upsideDown': P('problem', 'rotate', '證件上下顛倒了，請把證件轉正'),
+  'card.ocrWrongFront': P('problem', 'flip', '辨識結果是背面，請翻到有照片的正面重拍'),
+  'card.ocrWrongBack': P('problem', 'flip', '辨識結果是正面，請翻到背面重拍'),
+  'card.ocrUnreadable': P('problem', 'blur', '證件文字看不清楚，請重拍一次'),
+  'card.ocrChecking': P('good', 'ok', '正在確認證件面別…'),
+  // auto-tracking mode (frame follows the card)
+  'card.track.search': P('adjust', 'frame', '請把證件放進畫面，框會自動找到證件', '鏡頭對準證件，四個角都要看得到'),
+  'card.track.small': P('adjust', 'closer', '再靠近一點', '證件太小了，請把手機慢慢靠近證件'),
 
   // ---- face (front camera, preview mirrored; directions as seen on screen) ----
   'face.none': P('adjust', 'frame', '請把臉移進橢圓框', '請看向螢幕，把臉放進橢圓框', '找不到臉，請把手機對著自己的臉'),

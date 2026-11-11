@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1f33">
 <meta name="robots" content="noindex">
-<title>eKYC · FaceMe 預覽 v2026-11-11e</title>
+<title>eKYC · FaceMe 預覽 v2026-11-11f</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11e">
+<link rel="stylesheet" href="styles.css?v=2026-11-11f">
 </head>
 <body>
 <header class="top">
@@ -19,7 +19,7 @@
       <span>設定</span>
     </button>
   </div>
-  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11e</h1>
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11f</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
     <li data-step="face"><span>2</span>拍人臉</li>
@@ -57,6 +57,8 @@
         <path id="shade" fill-rule="evenodd"></path>
         <path id="guide" class="guide"></path>
         <rect id="detected" class="detected" rx="10" ry="10"></rect>
+        <polygon id="track" class="track"></polygon>
+        <path id="track-corners" class="track-corners"></path>
       </svg>
       <div id="banner" class="hint" role="status" aria-live="polite">
         <span id="hint-icon" class="hint-icon" aria-hidden="true"></span>
@@ -146,6 +148,10 @@
         <label class="chk"><input type="checkbox" name="doForgery"><span>證件真偽辨識<small>僅身分證；會請你斜拍一下證件</small></span></label>
       </fieldset>
       <fieldset>
+        <legend>拍攝方式</legend>
+        <label class="chk"><input type="checkbox" name="autoTrack"><span>自動追拍（框會自動找證件）<small>證件放在畫面任何位置都可以，框會跟著證件移動；關閉時用固定框</small></span></label>
+      </fieldset>
+      <fieldset>
         <legend>上傳方式</legend>
         <label class="chk"><input type="radio" name="mode" value="mock" checked><span>模擬<small>不傳出任何資料</small></span></label>
         <label class="chk"><input type="radio" name="mode" value="real"><span>實際上傳</span></label>
@@ -162,6 +168,7 @@
         <label class="field">案件範本 ID（requestTemplateUuid）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
         <label class="chk"><input type="checkbox" name="idLargestFace" checked><span>證件有多張臉時取最大<small>multipleFacePriority1=Largest</small></span></label>
         <label class="chk"><input type="checkbox" name="imageDeskewed"><span>證件影像已校正<small>imageDeskewed</small></span></label>
+        <label class="chk"><input type="checkbox" name="ocrSideCheck" checked><span>拍完先用 OCR 確認正反面<small>僅實際上傳＋身分證：拍完立即呼叫 idcard/ocr，欄位不屬於這一面就請重拍；模擬模式不檢查</small></span></label>
         <label class="chk"><input type="checkbox" name="stillZeroBased"><span>靜止影格從 0 起算<small>detail.stg1_act_1.still，預設從 1</small></span></label>
         <p class="help">API：face/spoofingcheck（features：enableStrictMode／enableDeepfakeDetect）→ idcard/ocr → face/compare-boost/idcard → idcard/forgery。瀏覽器直連通常會被 CORS 擋，建議經由 proxy/ekyc-proxy.mjs。</p>
         <p id="engine-label" class="help"></p>
@@ -170,6 +177,6 @@
     </form>
   </div>
 </div>
-<script type="module" src="js/app.js?v=2026-11-11e"></script>
+<script type="module" src="js/app.js?v=2026-11-11f"></script>
 </body>
 </html>

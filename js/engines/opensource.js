@@ -1,13 +1,15 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11e):
+// Results (v2026-11-11f):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector } from '../card-detector.js?v=2026-11-11e';
-import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11e';
-import { SideClassifier } from '../side-classifier.js?v=2026-11-11e';
-import { phrase } from '../hints.js?v=2026-11-11e';
+import { CardDetector, CARD_ASPECT, quadGeometry } from '../card-detector.js?v=2026-11-11f';
+import { CardTracker } from '../card-tracker.js?v=2026-11-11f';
+import { deskewBlob } from '../warp.js?v=2026-11-11f';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11f';
+import { SideClassifier, sideMismatchKey } from '../side-classifier.js?v=2026-11-11f';
+import { phrase } from '../hints.js?v=2026-11-11f';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -30,10 +32,18 @@ export class OpenSourceEngine {
    *   minFrames   – keep holding (silently) until this many good frames were collected
    *   collectFront– also return this many distinct good frames in `front` (forgery 'front' images), collected
    *                 silently during the normal hold – the user sees a single capture
-   *   side        – 'front' | 'back' (TW ID): capture only when the portrait check agrees (front = photo found)
+   *   side        – 'front' | 'back' (TW ID): capture only when the side classifier positively agrees
+   *   track       – auto-tracking (自動追拍): find the card anywhere in the frame; result frames are deskewed
+   *                 (res.deskewed=true) and the original crops are kept in res.originals / res.front / res.all
+   *   aspect      – expected document aspect (tracking + deskew); default ID-1
    */
   async captureIdCard(ctx) {
-    const det = new CardDetector({ ...(ctx.cardOptions || {}) });
+    const tracking = !!ctx.track;
+    const mode = (ctx.cardOptions && ctx.cardOptions.mode) || 'front';
+    const aspect = ctx.aspect || CARD_ASPECT;
+    const det = tracking
+      ? new CardTracker({ mode, aspect, ...(ctx.trackOptions || {}) })
+      : new CardDetector({ ...(ctx.cardOptions || {}) });
     let sideCls = null;
     if (ctx.side) {
       sideCls = new SideClassifier();
@@ -45,43 +55,64 @@ export class OpenSourceEngine {
     const MIN = Math.max(ctx.minFrames || 0, ctx.collectFront || 0);
     const front = [], all = []; let readySince = 0;
     const canvas = document.createElement('canvas');
-    const cands = []; // {blob, sharp}
+    const cands = []; // {blob, sharp, quad?: corners in blob px}
     let lastGrab = 0;
-    const keep = (blob, sharp) => {
-      cands.push({ blob, sharp });
+    const keep = (c) => {
+      cands.push(c);
       cands.sort((a, b) => b.sharp - a.sharp);
       cands.length = Math.min(cands.length, KEEP);
     };
+    const dropAll = () => { cands.length = 0; front.length = 0; all.length = 0; readySince = 0; det.steadySince = 0; };
     return this._loop(ctx, async (ts) => {
-      const cam = ctx.camera;
-      const g = cam.displayToVideo(ctx.getGuide());
-      const m = 0.25;
-      const region = { x: g.x - g.w * m, y: g.y - g.h * m, w: g.w * (1 + 2 * m), h: g.h * (1 + 2 * m) };
-      const { img, region: rr, scale } = cam.sample(region, 320, canvas);
-      const guideA = { x: (g.x - rr.x) * scale, y: (g.y - rr.y) * scale, w: g.w * scale, h: g.h * scale };
-      let out = det.analyze(img, guideA, ts);
-      let rectVideo = null;
-      if (out.rect) rectVideo = { x: rr.x + out.rect.x / scale, y: rr.y + out.rect.y / scale, w: out.rect.w / scale, h: out.rect.h / scale };
+      const cam = ctx.camera, v = cam.video;
+      let out, rectVideo = null, quadVideo = null, g = null;
+      if (tracking) {
+        // whole frame; the quad can be anywhere
+        const { img, region: rr, scale } = cam.sample({ x: 0, y: 0, w: v.videoWidth, h: v.videoHeight }, 320, canvas);
+        out = det.analyze(img, ts);
+        const toV = (p) => ({ x: rr.x + p.x / scale, y: rr.y + p.y / scale });
+        if (out.rawQuad) {
+          quadVideo = out.rawQuad.map(toV);
+          const xs = quadVideo.map(p => p.x), ys = quadVideo.map(p => p.y);
+          rectVideo = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+        }
+        out.quadDisplay = out.quad ? out.quad.map(p => cam.videoPointToDisplay(toV(p))) : null;
+      } else {
+        g = cam.displayToVideo(ctx.getGuide());
+        const m = 0.25;
+        const region = { x: g.x - g.w * m, y: g.y - g.h * m, w: g.w * (1 + 2 * m), h: g.h * (1 + 2 * m) };
+        const { img, region: rr, scale } = cam.sample(region, 320, canvas);
+        const guideA = { x: (g.x - rr.x) * scale, y: (g.y - rr.y) * scale, w: g.w * scale, h: g.h * scale };
+        out = det.analyze(img, guideA, ts);
+        if (out.rect) {
+          rectVideo = { x: rr.x + out.rect.x / scale, y: rr.y + out.rect.y / scale, w: out.rect.w / scale, h: out.rect.h / scale };
+          quadVideo = [{ x: rectVideo.x, y: rectVideo.y }, { x: rectVideo.x + rectVideo.w, y: rectVideo.y }, { x: rectVideo.x + rectVideo.w, y: rectVideo.y + rectVideo.h }, { x: rectVideo.x, y: rectVideo.y + rectVideo.h }];
+        }
+      }
       if (sideCls && !ctx.forceRef.now) {
-        sideCls.tick(ts, !!out.rect && out.metrics.found >= 3);
-        if (rectVideo && GOOD.has(out.state)) sideCls.observe(cam.video, rectVideo, ts);
-        const v = sideCls.verdict();
-        out.metrics.side = v || '?'; out.metrics.votes = sideCls.summary;
-        if (v && v !== ctx.side && rectVideo) {
-          // wrong side in view: never capture it; drop anything collected from it
-          det.steadySince = 0; cands.length = 0; front.length = 0; all.length = 0; readySince = 0;
-          out = { ...out, state: 'wrongside', ...phrase(ctx.side === 'front' ? 'card.wrongBack' : 'card.wrongFront'), ready: false, progress: 0 };
-        } else if (v !== ctx.side && (out.ready || out.state === 'hold')) {
+        sideCls.tick(ts, tracking ? !!quadVideo : (!!out.rect && out.metrics.found >= 3));
+        if (quadVideo && GOOD.has(out.state)) sideCls.observe(v, quadVideo, ts, aspect);
+        const verdict = sideCls.verdict();
+        out.metrics.side = verdict || '?'; out.metrics.votes = sideCls.summary;
+        if (sideCls.lastFeat) { out.metrics.bc = sideCls.lastFeat.barcode; out.metrics.chroma = sideCls.lastFeat.chroma; out.metrics.face = sideCls.lastFeat.face; }
+        const bad = sideMismatchKey(ctx.side, verdict);
+        if (bad && quadVideo) {
+          // wrong side / not this document in view: never capture it; drop anything collected from it
+          dropAll();
+          out = { ...out, state: 'wrongside', ...phrase(bad), ready: false, progress: 0 };
+        } else if (verdict !== ctx.side && (out.ready || out.state === 'hold')) {
           out = { ...out, state: 'hold', ...phrase('card.sideCheck'), ready: false, progress: Math.min(out.progress || 0, 0.8) };
         }
       }
-      ctx.ui.update(out, rectVideo ? cam.videoToDisplay(rectVideo) : null);
+      ctx.ui.update(out, rectVideo && !tracking ? cam.videoToDisplay(rectVideo) : null);
       // every frame that passes all checks (holding still) is a candidate for the OCR set
       if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= (MIN > KEEP ? 80 : CARD_GRAB_MS)) {
         lastGrab = ts;
-        const b = await cam.grab(pad(rectVideo, det.o.mode === 'rightSide' ? 0.07 : 0.04), 1600);
-        keep(b, out.metrics.sharp || 0);
-        if (ctx.collectFront && front.length < ctx.collectFront) front.push(b);
+        const gm = await cam.grabMeta(pad(rectVideo, mode === 'rightSide' ? 0.07 : (tracking ? 0.05 : 0.04)), 1600);
+        const b = gm.blob;
+        const quad = quadVideo ? quadVideo.map(p => ({ x: (p.x - gm.region.x) * gm.scale, y: (p.y - gm.region.y) * gm.scale })) : null;
+        keep({ blob: b, sharp: out.metrics.sharp || 0, quad });
+        if (ctx.collectFront && front.length < ctx.collectFront) front.push(b);   // forgery: ORIGINAL frames
         if (MIN > KEEP) all.push(b);
       }
       const collected = MIN > KEEP ? all.length : cands.length;
@@ -92,13 +123,25 @@ export class OpenSourceEngine {
       }
       if (out.ready || ctx.forceRef.now) {
         if (!cands.length || ctx.forceRef.now) {
-          const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
-          keep(await cam.grab(src, 1600), ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0));
+          const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : (g ? pad(g, 0.02) : { x: 0, y: 0, w: v.videoWidth, h: v.videoHeight });
+          keep({ blob: await cam.grab(src, 1600), sharp: ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0), quad: null });
         }
-        const res = { image: cands[0].blob, frames: cands.map(c => c.blob), side: sideCls ? sideCls.verdict() : null, votes: sideCls ? sideCls.summary : '', metrics: out.metrics };
-        if (ctx.collectFront) res.front = front.length ? front.slice() : [cands[0].blob];
+        const originals = cands.map(c => c.blob);
+        const res = { image: originals[0], frames: originals, originals, side: sideCls ? sideCls.verdict() : null, votes: sideCls ? sideCls.summary : '', metrics: out.metrics };
+        if (tracking && mode !== 'rightSide' && cands.every(c => c.quad)) {
+          // perspective-corrected crops for display / OCR; the originals stay for forgery
+          try {
+            const desk = [];
+            for (const c of cands) {
+              const gq = quadGeometry(c.quad), wq = Math.max(gq.top, gq.bottom);
+              desk.push(await deskewBlob(c.blob, c.quad, Math.min(1600, Math.round(wq * 1.05)), aspect));
+            }
+            res.image = desk[0]; res.frames = desk; res.deskewed = true;
+          } catch (e) { console.warn('deskew failed, using original crops', e); }
+        }
+        if (ctx.collectFront) res.front = front.length ? front.slice() : [originals[0]];
         if (MIN > KEEP) res.all = all.slice(-MIN);
-        if (ctx.grabFull) res.full = await cam.grab({ x: 0, y: 0, w: cam.video.videoWidth, h: cam.video.videoHeight }, 1600);
+        if (ctx.grabFull) res.full = await cam.grab({ x: 0, y: 0, w: v.videoWidth, h: v.videoHeight }, 1600);
         return res;
       }
       return null;

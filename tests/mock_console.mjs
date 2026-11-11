@@ -2,6 +2,10 @@
 // with documented response shapes. MOCK_SCENARIO=ok (default) | needmore | errors
 import http from 'node:http';
 const SC = process.env.MOCK_SCENARIO || 'ok'  // ok | needmore | errors | nomatch;
+// MOCK_SWAP_FIRST=1: the FIRST OCR call answers with the OTHER side's fields (simulates holding the wrong side) -> app must reject and retake
+let swapLeft = process.env.MOCK_SWAP_FIRST ? Number(process.env.MOCK_SWAP_FIRST) || 1 : 0;
+const OCR_FRONT = { fullName: '王測試', sex: '男', dateOfBirth: '民國80年1月1日', dateOfIssue: '民國110年5月5日', parsedLocationFromDateOfIssue: '北市', identityNumber: 'A123456789' };
+const OCR_BACK = { Father: '王測一', Mother: '李測二', Spouse: '', militaryService: '', placeOfBirth: '測試市', address: '測試市測試區範例路1號', serialNumber: '0000000000', barCode: '0123456789' };
 const PORT = Number(process.env.MOCK_PORT || 18790);
 function parse(body, ctype) {
   const b = (ctype.match(/boundary=(.+)$/) || [])[1];
@@ -43,8 +47,10 @@ http.createServer((req, res) => {
     if (req.url.endsWith('/idcard/ocr')) {
       if (SC === 'needmore') return send(200, { result: 'needMoreImage' });
       if (SC === 'errors') return send(400, { message: 'Image has reflection.' });
-      // flat info object, as in the document's response example
-      return send(200, { fullName: '王測試', sex: '男', dateOfBirth: '民國80年1月1日', dateOfIssue: '民國110年5月5日', parsedLocationFromDateOfIssue: '北市', identityNumber: 'A123456789' });
+      // flat info object, as in the document's response example; back fields for TW_ID_CARD_BACK
+      let back = values.type === 'TW_ID_CARD_BACK';
+      if (swapLeft > 0) { swapLeft--; back = !back; console.log(JSON.stringify({ ocrSwapped: values.type })); }
+      return send(200, back ? OCR_BACK : OCR_FRONT);
     }
     if (req.url.endsWith('/compare-boost/idcard')) {
       if (SC === 'errors') return send(503, { message: 'Please setup FaceMe Platform first.' });

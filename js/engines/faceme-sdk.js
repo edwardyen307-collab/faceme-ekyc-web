@@ -129,8 +129,8 @@ export class FaceMeSdkEngine {
   async captureIdCard(ctx) {
     const step = ID_CARD_STEP[ctx.cardType];
     // forgery needs several distinct front frames (and the back side the portrait-based front/back check), which the SDK
-    // capture does not return: use the built-in detector for that side.
-    if (this.fallback && (ctx.collectFront || ctx.side === 'back')) {
+    // capture does not return: use the built-in detector for that side. Auto-tracking (自動追拍) is also built-in only.
+    if (this.fallback && (ctx.track || ctx.collectFront || ctx.side === 'back')) {
       if (!ctx.camera.stream) await ctx.camera.open('environment');
       return this.fallback.captureIdCard(ctx);
     }

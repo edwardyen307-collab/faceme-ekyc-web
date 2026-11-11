@@ -1,9 +1,9 @@
-import { APP_VERSION } from './version.js?v=2026-11-11e';
-import { Camera } from './camera.js?v=2026-11-11e';
-import { createEngine } from './engines/index.js?v=2026-11-11e';
-import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11e';
-import { phrase } from './hints.js?v=2026-11-11e';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL } from './upload.js?v=2026-11-11e';
+import { APP_VERSION } from './version.js?v=2026-11-11f';
+import { Camera } from './camera.js?v=2026-11-11f';
+import { createEngine } from './engines/index.js?v=2026-11-11f';
+import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11f';
+import { phrase } from './hints.js?v=2026-11-11f';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL, verifyOcrSide } from './upload.js?v=2026-11-11f';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -13,6 +13,7 @@ const MANUAL_AFTER_MS = Number(params.get('manualAfter') || 12000);
 const els = {
   stage: $('stage'), video: $('video'), hint: $('hint'), progress: $('progress'), shade: $('shade'), guide: $('guide'),
   detected: $('detected'), overlay: $('overlay'), flash: $('flash'), metrics: $('metrics'), stageTitle: $('stage-title'),
+  track: $('track'), trackCorners: $('track-corners'),
   manual: $('btn-manual'), banner: $('banner'), hintIcon: $('hint-icon'), demo: $('demo'), demoText: $('demo-text'), ring: $('ring'),
 };
 const ICONS = { left: '←', right: '→', up: '↑', down: '↓', closer: '＋', farther: '－', rotate: '↻', flat: '▭', tiltright: '↗', frame: '⛶',
@@ -85,6 +86,11 @@ function layoutGuide(kind) {
     path = `M ${cx - rx} ${cy} a ${rx} ${ry} 0 1 0 ${2 * rx} 0 a ${rx} ${ry} 0 1 0 ${-2 * rx} 0 Z`;
   }
   state.guide = g;
+  // 自動追拍: no fixed frame / shade; the detected quad is drawn instead (see ui.update)
+  state.tracking = !!cfg.autoTrack && (kind === 'card' || kind === 'tilt');
+  els.stage.classList.toggle('tracking', state.tracking);
+  els.track.classList.remove('on'); els.trackCorners.classList.remove('on');
+  if (state.tracking) { els.shade.setAttribute('d', ''); els.guide.setAttribute('d', path); els.progress.style.top = (g.y + g.h + 14) + 'px'; return; }
   els.shade.setAttribute('d', `M0 0 H${cw} V${ch} H0 Z ` + path);
   els.guide.setAttribute('d', path);
   els.progress.style.top = (g.y + g.h + 14) + 'px';
@@ -98,7 +104,7 @@ window.addEventListener('resize', () => { if (state.kind) layoutGuide(state.kind
 // One stable hint: a new hint must persist (debounce) and the current one stays at least MIN_SHOW ms,
 // except that "good" states (hold / capturing) appear quickly so the user is not told to move while it shoots.
 const MIN_SHOW = 1500, DEBOUNCE = 450, GOOD_DEBOUNCE = 150, LEAVE_GOOD_SHOW = 700;
-const CALM = new Set(['hold', 'capture', 'steady', 'moving', 'loading', 'sdk', 'search', 'noface', 'flip']);
+const CALM = new Set(['hold', 'capture', 'steady', 'moving', 'loading', 'sdk', 'search', 'noface', 'flip', 'checking']);
 function showHint(out) {
   const level = out.level || STATE_LEVEL[out.state] || 'adjust';
   const key = out.key || out.hint;
@@ -135,10 +141,28 @@ const ui = {
       els.detected.setAttribute('width', Math.max(0, rectDisplay.w)); els.detected.setAttribute('height', Math.max(0, rectDisplay.h));
       els.detected.classList.toggle('on', state.kind !== 'tilt');
     } else els.detected.classList.remove('on');
+    drawTrack(out.quadDisplay);
     if (DEBUG) els.metrics.textContent = out.state + ' ' + JSON.stringify(out.metrics || {});
     window.__ekyc.last = { state: out.state, hint: els.hint.textContent, raw: out.hint, level: els.stage.dataset.level, dir: els.stage.dataset.dir, metrics: out.metrics };
   },
 };
+// auto-tracking quad: dashed outline + corner marks that follow (and scale with) the card
+function drawTrack(q) {
+  if (!state.tracking || !q) { els.track.classList.remove('on'); els.trackCorners.classList.remove('on'); state.trackQuad = null; return; }
+  els.track.setAttribute('points', q.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '));
+  let d = '';
+  for (let i = 0; i < 4; i++) {
+    const p = q[i], a = q[(i + 1) % 4], b = q[(i + 3) % 4];
+    const la = Math.min(26, Math.hypot(a.x - p.x, a.y - p.y) * 0.18), lb = Math.min(26, Math.hypot(b.x - p.x, b.y - p.y) * 0.18);
+    const u = (t, l) => ({ x: p.x + (t.x - p.x) / Math.hypot(t.x - p.x, t.y - p.y) * l, y: p.y + (t.y - p.y) / Math.hypot(t.x - p.x, t.y - p.y) * l });
+    const A = u(a, la), B = u(b, lb);
+    d += `M ${A.x.toFixed(1)} ${A.y.toFixed(1)} L ${p.x.toFixed(1)} ${p.y.toFixed(1)} L ${B.x.toFixed(1)} ${B.y.toFixed(1)} `;
+  }
+  els.trackCorners.setAttribute('d', d);
+  els.track.classList.add('on'); els.trackCorners.classList.add('on');
+  state.trackQuad = q;
+  const ys = q.map(p => p.y); els.progress.style.top = (Math.max(...ys) + 14) + 'px';
+}
 function demo(kind, text) {
   els.demo.hidden = !kind; els.demo.className = 'demo ' + (kind || ''); els.demoText.textContent = text || '';
 }
@@ -177,6 +201,11 @@ async function openStage(kind, title) {
   return { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef };
 }
 
+// expected aspect for auto-tracking / deskew (ID-1 cards by default)
+const TYPE_ASPECT = { PASSPORT: 125 / 88, TW_CAR_REGISTRATION: 1.5, TW_MOTORCYCLE_REGISTRATION: 1.5 };
+const trackOpts = (type) => (TYPE_ASPECT[type] ? { aspectTol: 0.35 } : {});
+const OCR_MAX_UNREADABLE = 3; // an unreadable (not wrong-side) OCR result stops blocking after this many retakes
+
 /** One side of a document (front or back), incl. silent forgery frames and the tilted shots. */
 async function captureSide(ctx, type, opts) {
   const forgery = forgeryApplies(cfg, type);
@@ -187,13 +216,32 @@ async function captureSide(ctx, type, opts) {
   armManual();
   // TW ID: portrait photo = front; capture only the requested side. The back is pale/low-contrast: softer thresholds.
   const side = type === 'TW_ID_CARD_FRONT' ? 'front' : type === 'TW_ID_CARD_BACK' ? 'back' : null;
-  const raw = await engine.captureIdCard({ ...ctx, cardType: type, collectFront: req ? req.front : 0, side,
-    cardOptions: type === 'TW_ID_CARD_BACK' ? CARD_BACK : undefined });
-  clearTimeout(state.manualTimer);
-  flash();
-  const shot = raw instanceof Blob ? { image: raw, frames: [raw] } : raw;
-  shot.type = type;
-  log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now, verdict: shot.side, votes: shot.votes, m: shot.metrics });
+  const track = !!cfg.autoTrack;
+  let shot, unreadable = 0;
+  for (;;) {
+    const raw = await engine.captureIdCard({ ...ctx, cardType: type, collectFront: req ? req.front : 0, side, track,
+      aspect: TYPE_ASPECT[type], trackOptions: trackOpts(type),
+      cardOptions: type === 'TW_ID_CARD_BACK' ? CARD_BACK : undefined });
+    clearTimeout(state.manualTimer);
+    flash();
+    shot = raw instanceof Blob ? { image: raw, frames: [raw] } : raw;
+    shot.type = type;
+    log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now, verdict: shot.side, votes: shot.votes, m: shot.metrics, track, deskewed: !!shot.deskewed });
+    // real mode: OCR once right away and make sure the fields belong to this side (mock mode: skipped, nothing sent)
+    if (cfg.mode !== 'real' || !cfg.ocrSideCheck || !side) break;
+    ui.update({ state: 'checking', ...phrase('card.ocrChecking'), progress: 0 }, null, null, true);
+    let chk;
+    try { chk = await verifyOcrSide(cfg, shot); } catch (e) { chk = { status: 'unverified', msg: e.message }; }
+    shot.ocrCheck = chk;
+    log({ ocrSide: chk.status, side: type, key: chk.key, judge: chk.judge, msg: chk.msg });
+    if (chk.status !== 'reject') break;
+    if (chk.key === 'card.ocrUnreadable' && ++unreadable >= OCR_MAX_UNREADABLE) break; // the upload step will report it
+    // wrong side (or unreadable): say why, then capture this side again
+    forceRef.now = false;
+    ui.update({ state: 'wrongside', ...phrase(chk.key), progress: 0 }, null, null, true);
+    await sleep(2200);
+    resetStageUi(); layoutGuide('card'); armManual();
+  }
   if (req) {
     const fr = (shot.front && shot.front.length ? shot.front : shot.frames).slice(0, req.front);
     for (let i = 0; fr.length < req.front && i < 50; i++) fr.push(shot.frames[i % shot.frames.length]);
@@ -206,7 +254,7 @@ async function captureSide(ctx, type, opts) {
     ui.update({ state: 'search', ...phrase('card.rs.search') }, null, null, true);
     els.ring.hidden = false; els.ring.style.setProperty('--p', 0);
     armManual();
-    const r = await engine.captureCardShot({ ...ctx, cardType: type, cardOptions: CARD_RIGHTSIDE, keep: req.rightSide, minFrames: req.rightSide, grabFull: req.full > 0 });
+    const r = await engine.captureCardShot({ ...ctx, cardType: type, cardOptions: CARD_RIGHTSIDE, keep: req.rightSide, minFrames: req.rightSide, grabFull: req.full > 0, track, aspect: TYPE_ASPECT[type] });
     clearTimeout(state.manualTimer);
     els.ring.style.setProperty('--p', 100);
     flash();
@@ -294,9 +342,9 @@ function showReview() {
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
   const c = shots.card;
-  $('card-meta').textContent = `${typeLabel()}${c.back ? '・正面' : ''}` + (c.frames.length < 3 ? '・手動拍照只有 1 張，讀取資料可能要求補拍，建議重拍讓系統自動拍。' : '');
+  $('card-meta').textContent = `${typeLabel()}${c.back ? '・正面' : ''}` + (c.deskewed ? '・已自動校正（拉正）' : '') + (c.frames.length < 3 ? '・手動拍照只有 1 張，讀取資料可能要求補拍，建議重拍讓系統自動拍。' : '');
   $('back-fig').hidden = !c.back;
-  if (c.back) { $('img-back').src = shots.backUrl; $('back-meta').textContent = '身分證背面'; }
+  if (c.back) { $('img-back').src = shots.backUrl; $('back-meta').textContent = '身分證背面' + (c.back.deskewed ? '・已自動校正（拉正）' : ''); }
   resetMatch();
   renderForgery();
   $('face-meta').textContent = shots.face.detail ? '真人檢查資料由 FaceMe 元件產生' : `自拍（含 ${shots.face.frames.length} 張連拍供真人檢查）`;
@@ -418,7 +466,7 @@ function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<'
 // ---------- settings sheet (reachable from every page; changes apply immediately) ----------
 const form = $('admin-form');
 const sheet = $('settings');
-const BOOL_KEYS = ['useRequest', 'doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'idLargestFace', 'stillZeroBased', 'doForgery'];
+const BOOL_KEYS = ['useRequest', 'doSpoof', 'doOcr', 'doCompare', 'strictMode', 'deepfake', 'imageDeskewed', 'idLargestFace', 'stillZeroBased', 'doForgery', 'autoTrack', 'ocrSideCheck'];
 const TEXT_KEYS = ['baseUrl', 'token', 'platformAuth', 'templateUuid'];
 function fillForm() {
   form.mode.value = cfg.mode;

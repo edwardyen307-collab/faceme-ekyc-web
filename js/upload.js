@@ -59,6 +59,8 @@ export const DEFAULT_CONFIG = {
   doSpoof: true, doOcr: true, doCompare: true,
   strictMode: false, deepfake: false, imageDeskewed: false, idLargestFace: true, stillZeroBased: false,
   doForgery: false,
+  ocrSideCheck: true,     // real mode: after each TW ID capture, run OCR once and check the fields belong to that side
+  autoTrack: false,       // 自動追拍: the frame follows the card anywhere in view (default: fixed frame)
 };
 // Never persisted: secrets stay in memory for this page only.
 const SECRET_KEYS = ['token', 'platformAuth'];
@@ -186,7 +188,8 @@ export function buildOcrForm(card, cfg) {
   const f = new FormData();
   f.append('type', card.type);
   card.frames.forEach((b, i) => f.append('idCardImage', b, `idcard_${i}.jpg`));
-  if (cfg.imageDeskewed) f.append('imageDeskewed', 'true');
+  // card.deskewed: the auto-tracking crop is already perspective-corrected (OCR images only; forgery uses originals)
+  if (cfg.imageDeskewed || card.deskewed) f.append('imageDeskewed', 'true');
   return f;
 }
 export function buildCompareForm(card, face, cfg = {}) {
@@ -228,6 +231,49 @@ export function ocrSummary(info) {
   }
   return Object.entries(flat).filter(([, v]) => v !== '' && v !== null && v !== undefined)
     .map(([k, v]) => `${OCR_LABELS[k] || k}：${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
+}
+
+// ---------- post-capture OCR side check (TW ID, real mode only) ----------
+export const OCR_SIDE_FIELDS = {
+  TW_ID_CARD_FRONT: ['fullName', 'name', 'identityNumber', 'dateOfBirth', 'sex', 'dateOfIssue'],
+  TW_ID_CARD_BACK: ['Father', 'Mother', 'Spouse', 'militaryService', 'placeOfBirth', 'address', 'serialNumber', 'barCode'],
+};
+const filled = (info, keys) => keys.filter(k => { const v = info && info[k]; return v !== undefined && v !== null && String(v).trim() !== ''; }).length;
+/** OCR info vs the side that was meant to be captured -> 'ok' | 'mismatch' (other side's fields) | 'empty' (nothing read). */
+export function judgeOcrSide(type, info) {
+  const own = OCR_SIDE_FIELDS[type]; if (!own) return { verdict: 'ok', own: 0, other: 0 };
+  const otherType = type === 'TW_ID_CARD_FRONT' ? 'TW_ID_CARD_BACK' : 'TW_ID_CARD_FRONT';
+  const o = filled(info, own), x = filled(info, OCR_SIDE_FIELDS[otherType]);
+  if (!o && !x) return { verdict: 'empty', own: o, other: x };
+  if (x > o) return { verdict: 'mismatch', own: o, other: x };
+  return { verdict: 'ok', own: o, other: x };
+}
+/**
+ * Right after a capture: run /idcard/ocr once and check the fields match the expected side.
+ * mock mode / setting off / not a TW ID side -> { status:'skipped' } (no request, no claim).
+ * Wrong side or unreadable -> { status:'reject', key, msg } (caller asks for a retake).
+ * Network / auth / server problems -> { status:'unverified', msg } (not blocking; the full upload reports it).
+ * A successful result is cached on the shot (shot.ocrCheck) so the final upload reuses it.
+ */
+export async function verifyOcrSide(cfg, shot, signal) {
+  if (cfg.mode !== 'real' || !cfg.ocrSideCheck || !cfg.baseUrl || !OCR_SIDE_FIELDS[shot.type]) return { status: 'skipped' };
+  const front = shot.type === 'TW_ID_CARD_FRONT';
+  let d;
+  try {
+    const { call } = await prepareCall(cfg, null, signal);
+    d = await post(call, ENDPOINTS.ocr, buildOcrForm(shot, cfg), signal);
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    if (e.retake === 'card' || e.status === 400) return { status: 'reject', key: 'card.ocrUnreadable', msg: e.message, data: e.body };
+    return { status: 'unverified', msg: e.message, data: e.body };
+  }
+  const { result, info } = readOcr(d);
+  if (result === 'needMoreImage') return { status: 'reject', key: 'card.ocrUnreadable', msg: '證件影像不夠清楚', data: d };
+  if (result !== 'ok') return { status: 'unverified', msg: '無法判讀 OCR 結果：' + fmt(result), data: d };
+  const j = judgeOcrSide(shot.type, info);
+  if (j.verdict === 'mismatch') return { status: 'reject', key: front ? 'card.ocrWrongFront' : 'card.ocrWrongBack', judge: j, data: d };
+  if (j.verdict === 'empty') return { status: 'reject', key: 'card.ocrUnreadable', judge: j, data: d };
+  return { status: 'ok', judge: j, data: d, info };
 }
 
 // ---------- per-session eKYC case (Create Request) ----------
@@ -311,7 +357,9 @@ export async function uploadEkyc(cfg, card, face, onStep, signal) {
     if (r === 'spoofing') return { ok: false, verdict: '判定為非真人（翻拍／照片／面具），請重拍人臉', summary, retake: 'face' };
     return { ok: false, verdict: '無法判讀真人檢查結果：' + fmt(r), summary };
   });
-  if (cfg.doOcr) for (const c of sides) await run('ocr', `讀取證件資料${sideName(c)}`, () => post(call, ENDPOINTS.ocr, buildOcrForm(c, cfg), signal), (d) => {
+  // reuse the OCR result of the post-capture side check (same images) instead of sending them twice
+  const ocrOnce = (c) => (c.ocrCheck && c.ocrCheck.status === 'ok' && c.ocrCheck.data ? Promise.resolve(c.ocrCheck.data) : post(call, ENDPOINTS.ocr, buildOcrForm(c, cfg), signal));
+  if (cfg.doOcr) for (const c of sides) await run('ocr', `讀取證件資料${sideName(c)}`, () => ocrOnce(c), (d) => {
     const { result: r, info } = readOcr(d);
     if (r === 'ok') return { ok: true, verdict: '讀取完成', summary: ocrSummary(info), info };
     if (r === 'needMoreImage') return { ok: false, verdict: '證件影像不夠清楚，請重拍證件（拿穩、避免反光、讓證件填滿框線）', retake: 'card' };

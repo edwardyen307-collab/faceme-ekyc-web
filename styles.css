@@ -197,10 +197,20 @@ details.forgery-fig summary { cursor:pointer; }
 .sheet .adv[open] summary::before { transform:rotate(90deg); }
 .sheet .adv summary::-webkit-details-marker { display:none; }
 
-/* ---- v2026-11-11e ---- */
+/* ---- v2026-11-11f ---- */
 .oblique-fig { margin:0 12px 12px; background:var(--card); border-radius:12px; padding:10px; }
 .oblique-fig figcaption { font-size:15px; font-weight:700; margin-bottom:8px; }
 .ostrip { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
 .ostrip figure { margin:0; }
 .ostrip img { width:100%; aspect-ratio:1.45; object-fit:contain; background:#000; border-radius:8px; display:block; }
 .ostrip figcaption { font-size:13px; font-weight:600; margin:4px 0 0; text-align:center; }
+
+/* auto-tracking (自動追拍): the quad follows the card */
+.track, .track-corners { fill:none; opacity:0; transition:opacity .15s; }
+.track { stroke:#fff; stroke-width:2; stroke-dasharray:8 6; fill:rgba(255,255,255,.06); }
+.track-corners { stroke:#fbbf24; stroke-width:5; stroke-linecap:round; stroke-linejoin:round; }
+.track.on, .track-corners.on { opacity:1; }
+.stage[data-level="good"] .track { stroke:var(--ok); stroke-dasharray:none; }
+.stage[data-level="good"] .track-corners { stroke:var(--ok); }
+.stage[data-level="problem"] .track-corners { stroke:#f87171; }
+.stage.tracking .guide { display:none; }

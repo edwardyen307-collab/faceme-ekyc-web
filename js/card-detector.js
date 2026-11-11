@@ -2,8 +2,8 @@
 // Finds the four straight borders of a card-shaped object around the on-screen guide
 // using Sobel edge projection profiles, then checks fill, alignment, aspect ratio,
 // glare, darkness and sharpness. Works on a downscaled RGBA ImageData.
-import { toGray, laplacianVariance, lumaStats, meanAbsDiff, glareStats } from './imageops.js?v=2026-11-11e';
-import { phrase } from './hints.js?v=2026-11-11e';
+import { toGray, laplacianVariance, lumaStats, meanAbsDiff, glareStats } from './imageops.js?v=2026-11-11f';
+import { phrase } from './hints.js?v=2026-11-11f';
 
 export const CARD_ASPECT = 85.6 / 53.98; // ISO/IEC 7810 ID-1 (Taiwan ID card, driver licence, health card)
 

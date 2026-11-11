@@ -1,8 +1,8 @@
 // Selfie quality gate on top of MediaPipe Face Landmarker (Apache-2.0, vendored in /vendor).
 // Decides: one face, inside oval, size, frontal pose, eyes open, not occluded, bright, sharp,
 // held still >= holdMs. Occlusion is a colour/geometry heuristic (best effort, see README).
-import { phrase } from './hints.js?v=2026-11-11e';
-import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11e';
+import { phrase } from './hints.js?v=2026-11-11f';
+import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11f';
 
 export const FACE_DEFAULTS = {
   minSize: 0.66, maxSize: 0.98,   // face width / oval width
