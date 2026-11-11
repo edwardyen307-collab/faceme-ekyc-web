@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1f33">
 <meta name="robots" content="noindex">
-<title>eKYC · FaceMe 預覽 v2026-11-11d</title>
+<title>eKYC · FaceMe 預覽 v2026-11-11e</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11d">
+<link rel="stylesheet" href="styles.css?v=2026-11-11e">
 </head>
 <body>
 <header class="top">
@@ -19,7 +19,7 @@
       <span>設定</span>
     </button>
   </div>
-  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11d</h1>
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11e</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
     <li data-step="face"><span>2</span>拍人臉</li>
@@ -94,6 +94,10 @@
     <figure id="back-fig" class="back-fig" hidden>
       <figcaption>① 證件背面</figcaption><img id="img-back" alt="拍攝的證件背面"><small id="back-meta" class="meta"></small>
     </figure>
+    <figure id="oblique-fig" class="oblique-fig" hidden>
+      <figcaption>斜拍照（證件真偽辨識用）</figcaption>
+      <div id="oblique-strip" class="ostrip"></div>
+    </figure>
     <section id="match" class="match" aria-labelledby="match-h">
       <h3 id="match-h">人證比對</h3>
       <p class="note">比對證件上的照片和你的自拍，確認是不是同一個人。</p>
@@ -101,7 +105,7 @@
       <div id="match-result" class="match-result" role="status" hidden></div>
     </section>
     <details id="forgery-fig" class="forgery-fig" hidden>
-      <summary>證件真偽辨識影像（<span id="forgery-count">0</span> 張）</summary>
+      <summary>全部真偽辨識影像（<span id="forgery-count">0</span> 張，含正拍）</summary>
       <div id="forgery-strip" class="strip"></div>
       <small id="forgery-meta" class="meta"></small>
     </details>
@@ -166,6 +170,6 @@
     </form>
   </div>
 </div>
-<script type="module" src="js/app.js?v=2026-11-11d"></script>
+<script type="module" src="js/app.js?v=2026-11-11e"></script>
 </body>
 </html>

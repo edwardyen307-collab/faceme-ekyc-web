@@ -128,9 +128,9 @@ export class FaceMeSdkEngine {
   /** ctx.cardType = eKYC OCR type. Returns { image, frames[], scores[] }. */
   async captureIdCard(ctx) {
     const step = ID_CARD_STEP[ctx.cardType];
-    // forgery needs several distinct front frames (and the two-sided flow a reference thumbnail), which the SDK
+    // forgery needs several distinct front frames (and the back side the portrait-based front/back check), which the SDK
     // capture does not return: use the built-in detector for that side.
-    if (this.fallback && (ctx.collectFront || (ctx.cardOptions && ctx.cardOptions.refThumb))) {
+    if (this.fallback && (ctx.collectFront || ctx.side === 'back')) {
       if (!ctx.camera.stream) await ctx.camera.open('environment');
       return this.fallback.captureIdCard(ctx);
     }

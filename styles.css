@@ -196,3 +196,11 @@ details.forgery-fig summary { cursor:pointer; }
 .sheet .adv summary::before { content:'▸'; margin-right:8px; transition:transform .2s; }
 .sheet .adv[open] summary::before { transform:rotate(90deg); }
 .sheet .adv summary::-webkit-details-marker { display:none; }
+
+/* ---- v2026-11-11e ---- */
+.oblique-fig { margin:0 12px 12px; background:var(--card); border-radius:12px; padding:10px; }
+.oblique-fig figcaption { font-size:15px; font-weight:700; margin-bottom:8px; }
+.ostrip { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }
+.ostrip figure { margin:0; }
+.ostrip img { width:100%; aspect-ratio:1.45; object-fit:contain; background:#000; border-radius:8px; display:block; }
+.ostrip figcaption { font-size:13px; font-weight:600; margin:4px 0 0; text-align:center; }

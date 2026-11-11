@@ -1,9 +1,9 @@
-import { APP_VERSION } from './version.js?v=2026-11-11d';
-import { Camera } from './camera.js?v=2026-11-11d';
-import { createEngine } from './engines/index.js?v=2026-11-11d';
-import { CARD_ASPECT, CARD_RIGHTSIDE } from './card-detector.js?v=2026-11-11d';
-import { phrase } from './hints.js?v=2026-11-11d';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL } from './upload.js?v=2026-11-11d';
+import { APP_VERSION } from './version.js?v=2026-11-11e';
+import { Camera } from './camera.js?v=2026-11-11e';
+import { createEngine } from './engines/index.js?v=2026-11-11e';
+import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11e';
+import { phrase } from './hints.js?v=2026-11-11e';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL } from './upload.js?v=2026-11-11e';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -185,13 +185,15 @@ async function captureSide(ctx, type, opts) {
   state.phase = opts.back ? 'back' : 'front';
   layoutGuide('card');
   armManual();
-  const raw = await engine.captureIdCard({ ...ctx, cardType: type, collectFront: req ? req.front : 0,
-    cardOptions: opts.refThumb ? { refThumb: opts.refThumb } : undefined });
+  // TW ID: portrait photo = front; capture only the requested side. The back is pale/low-contrast: softer thresholds.
+  const side = type === 'TW_ID_CARD_FRONT' ? 'front' : type === 'TW_ID_CARD_BACK' ? 'back' : null;
+  const raw = await engine.captureIdCard({ ...ctx, cardType: type, collectFront: req ? req.front : 0, side,
+    cardOptions: type === 'TW_ID_CARD_BACK' ? CARD_BACK : undefined });
   clearTimeout(state.manualTimer);
   flash();
   const shot = raw instanceof Blob ? { image: raw, frames: [raw] } : raw;
   shot.type = type;
-  log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now });
+  log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now, verdict: shot.side, votes: shot.votes, m: shot.metrics });
   if (req) {
     const fr = (shot.front && shot.front.length ? shot.front : shot.frames).slice(0, req.front);
     for (let i = 0; fr.length < req.front && i < 50; i++) fr.push(shot.frames[i % shot.frames.length]);
@@ -204,7 +206,7 @@ async function captureSide(ctx, type, opts) {
     ui.update({ state: 'search', ...phrase('card.rs.search') }, null, null, true);
     els.ring.hidden = false; els.ring.style.setProperty('--p', 0);
     armManual();
-    const r = await engine.captureCardShot({ ...ctx, cardType: type, cardOptions: { ...CARD_RIGHTSIDE, refThumb: shot.thumb || null }, keep: req.rightSide, minFrames: req.rightSide, grabFull: req.full > 0 });
+    const r = await engine.captureCardShot({ ...ctx, cardType: type, cardOptions: CARD_RIGHTSIDE, keep: req.rightSide, minFrames: req.rightSide, grabFull: req.full > 0 });
     clearTimeout(state.manualTimer);
     els.ring.style.setProperty('--p', 100);
     flash();
@@ -213,7 +215,7 @@ async function captureSide(ctx, type, opts) {
     while (rsList.length < req.rightSide) rsList.push(rs[0]);
     shot.forgery = { shots: fr.map(b => ({ blob: b, direction: 'front' })).concat(rsList.map(b => ({ blob: b, direction: 'rightSide' }))),
       full: r.full ? [r.full] : [], counts: req };
-    log({ forgery: type, front: fr.length, rightSide: rsList.length });
+    log({ forgery: type, front: fr.length, rightSide: rsList.length, geo: r.metrics ? { lr: r.metrics.lr, tb: r.metrics.tb, corner: r.metrics.corner, sharp: r.metrics.sharp } : null, manual: forceRef.now });
     await sleep(300);
     demo(null); els.ring.hidden = true; layoutGuide('card');
   }
@@ -225,13 +227,13 @@ async function runCard() {
   const ctx = await openStage('card', `步驟 1／3：拍攝${typeLabel()}（後鏡頭）`);
   const front = await captureSide(ctx, sides[0], {});
   if (sides[1]) {
-    // flip guide, then the back side (the detector refuses the front until it has really been flipped)
+    // flip guide, then the back side (the portrait check refuses the front until it has really been flipped)
     state.phase = 'flip';
     resetStageUi('步驟 1／3：拍攝身分證背面（後鏡頭）');
     demo('flip', '把身分證翻到背面');
     ui.update({ state: 'flip', ...phrase('card.flip') }, null, null, true);
     await sleep(1800);
-    front.back = await captureSide(ctx, sides[1], { back: true, refThumb: front.thumb });
+    front.back = await captureSide(ctx, sides[1], { back: true });
     demo(null);
   }
   setShot('card', front);
@@ -307,6 +309,7 @@ function renderForgery() {
   const fig = $('forgery-fig'), strip = $('forgery-strip');
   const sides = [shots.card, shots.card && shots.card.back].filter(c => c && c.forgery);
   fig.hidden = !sides.length; strip.innerHTML = '';
+  $('oblique-fig').hidden = true;
   if (!sides.length) return;
   shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = [];
   let n = 0;
@@ -318,6 +321,15 @@ function renderForgery() {
     fg.querySelector('img').src = u; strip.appendChild(fg);
   }
   $('forgery-count').textContent = n;
+  // the oblique (rightSide) photos are shown openly so the tester can see that the card was really shot at an angle
+  const ostrip = $('oblique-strip'); ostrip.innerHTML = '';
+  for (const c of sides) c.forgery.shots.filter(x => x.direction === 'rightSide').forEach((s, i) => {
+    const u = URL.createObjectURL(s.blob); shots.forgeryUrls.push(u);
+    const fg = document.createElement('figure');
+    fg.innerHTML = `<img alt="斜拍照"><figcaption>斜拍照 ${i + 1}${sides.length > 1 ? '・' + (SIDE_LABEL[c.type] || '') : ''}</figcaption>`;
+    fg.querySelector('img').src = u; ostrip.appendChild(fg);
+  });
+  $('oblique-fig').hidden = !ostrip.children.length;
   $('forgery-meta').textContent = '上傳時用於證件真偽辨識。' + sides.map(c => `${SIDE_LABEL[c.type] || c.type}：正拍 ${c.forgery.shots.filter(x => x.direction === 'front').length}＋斜拍 ${c.forgery.shots.filter(x => x.direction === 'rightSide').length}`).join('，') +
     `（張數來源：${sides[0].forgery.counts.source === 'api' ? '伺服器' : '預設'}）`;
 }

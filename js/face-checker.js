@@ -1,13 +1,14 @@
 // Selfie quality gate on top of MediaPipe Face Landmarker (Apache-2.0, vendored in /vendor).
 // Decides: one face, inside oval, size, frontal pose, eyes open, not occluded, bright, sharp,
 // held still >= holdMs. Occlusion is a colour/geometry heuristic (best effort, see README).
-import { phrase } from './hints.js?v=2026-11-11d';
-import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11d';
+import { phrase } from './hints.js?v=2026-11-11e';
+import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11e';
 
 export const FACE_DEFAULTS = {
   minSize: 0.66, maxSize: 0.98,   // face width / oval width
   maxCenter: 0.20,                // normalised ellipse distance of face centre
   maxYaw: 14, maxPitch: 16, maxRoll: 10, // degrees (from transformation matrix)
+  profileYaw: 24, profileRatio: 0.17,     // beyond this the head is clearly turned sideways -> explicit "側臉" hint
   yawRatio: 0.09,                 // landmark fallback: nose offset / face width
   pitchLo: 0.22, pitchHi: 0.48, pitchNeutral: 0.35, // (nose.y-eye.y)/(chin.y-eye.y); measured ≈0.33 on a frontal test face
   maxBlink: 0.5,
@@ -93,6 +94,12 @@ export class FaceChecker {
     const rollDeg = Math.atan2(eb.y - ea.y, eb.x - ea.x) * 180 / Math.PI;
     Object.assign(metrics, { yawR: +yawR.toFixed(3), pitchR: +pitchR.toFixed(2), rollL: +rollDeg.toFixed(1) });
     if (ang) Object.assign(metrics, { yaw: +ang.yaw.toFixed(1), pitch: +ang.pitch.toFixed(1), roll: +ang.roll.toFixed(1) });
+    // clearly sideways (profile): explicit hint, takes priority over position/size
+    const profile = (ang && Math.abs(ang.yaw) > o.profileYaw) || Math.abs(yawR) > o.profileRatio;
+    if (profile) {
+      const turnLeft = Math.abs(yawR) > 0.02 ? yawR > 0 : (ang ? ang.yaw * sgn < 0 : true);
+      return fail('profile', turnLeft ? 'face.profileL' : 'face.profileR');
+    }
     const yawBad = ang ? Math.abs(ang.yaw) > o.maxYaw : Math.abs(yawR) > o.yawRatio;
     const pitchBad = ang ? Math.abs(ang.pitch) > o.maxPitch : (pitchR < o.pitchLo || pitchR > o.pitchHi);
     const rollBad = ang ? Math.abs(ang.roll) > o.maxRoll : Math.abs(rollDeg) > o.maxRoll;
@@ -151,15 +158,42 @@ export class FaceChecker {
   }
 }
 
+let filesetPromise = null;
+async function visionFileset() {
+  if (!filesetPromise) filesetPromise = (async () => {
+    const vision = await import('../vendor/mediapipe/vision_bundle.mjs');
+    const fileset = await vision.FilesetResolver.forVisionTasks(new URL('../vendor/mediapipe/wasm', import.meta.url).href);
+    return { vision, fileset };
+  })();
+  filesetPromise.catch(() => { filesetPromise = null; });
+  return filesetPromise;
+}
+
+let imageLmkPromise = null;
+/** Second FaceLandmarker in IMAGE mode, used on card crops (portrait photo = TW ID front). Same vendored model. */
+export function loadImageLandmarker() {
+  if (imageLmkPromise) return imageLmkPromise;
+  imageLmkPromise = (async () => {
+    const { vision, fileset } = await visionFileset();
+    const opts = (delegate) => ({
+      baseOptions: { modelAssetPath: new URL('../models/face_landmarker.task', import.meta.url).href, delegate },
+      runningMode: 'IMAGE', numFaces: 1, minFaceDetectionConfidence: 0.45, minFacePresenceConfidence: 0.45,
+    });
+    try { return await vision.FaceLandmarker.createFromOptions(fileset, opts('GPU')); }
+    catch (e) { return await vision.FaceLandmarker.createFromOptions(fileset, opts('CPU')); }
+  })();
+  imageLmkPromise.catch(() => { imageLmkPromise = null; });
+  return imageLmkPromise;
+}
+
 let landmarkerPromise = null;
 /** Lazily create a FaceLandmarker from the vendored wasm + model (no CDN). */
 export function loadLandmarker() {
   if (landmarkerPromise) return landmarkerPromise;
   landmarkerPromise = (async () => {
-    const { FilesetResolver, FaceLandmarker } = await import('../vendor/mediapipe/vision_bundle.mjs');
-    const wasmBase = new URL('../vendor/mediapipe/wasm', import.meta.url).href;
+    const { vision, fileset } = await visionFileset();
+    const { FaceLandmarker } = vision;
     const model = new URL('../models/face_landmarker.task', import.meta.url).href;
-    const fileset = await FilesetResolver.forVisionTasks(wasmBase);
     const opts = (delegate) => ({
       baseOptions: { modelAssetPath: model, delegate },
       runningMode: 'VIDEO', numFaces: 2,

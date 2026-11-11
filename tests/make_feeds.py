@@ -58,6 +58,44 @@ def make_card_back():
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=36, fill=255)
     return card, mask
 
+def make_card_back_real():
+    """Closer to a real TW ID back: pale, low-contrast print (fine guilloche, thin small text, barcode), no portrait."""
+    cw, ch = 856, 540
+    card = Image.new('RGB', (cw, ch), (236, 239, 230))
+    d = ImageDraw.Draw(card)
+    for i in range(-ch, cw, 9):
+        d.line([(i, 0), (i + ch, ch)], fill=(228, 233, 222), width=1)
+        d.line([(i + ch, 0), (i, ch)], fill=(230, 234, 224), width=1)
+    rows = [('父', '王測一'), ('母', '李測二'), ('配偶', ''), ('役別', ''), ('出生地', '測試市'), ('住址', '測試市測試區範例里 1 鄰範例路 1 號')]
+    y = 40
+    for k, v in rows:
+        d.text((40, y), k, font=font(24), fill=(120, 120, 115))
+        d.text((150, y), v, font=font(26), fill=(70, 70, 70))
+        y += 52
+    rnd = random.Random(9); x = 470
+    while x < cw - 50:
+        wbar = rnd.choice([2, 3, 5]); d.rectangle([x, 440, x + wbar, 500], fill=(40, 40, 40)); x += wbar + rnd.choice([2, 3, 5])
+    d.text((470, 505), '0123456789', font=font(20), fill=(90, 90, 90))
+    mask = Image.new('L', (cw, ch), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=36, fill=255)
+    return card, mask
+
+def light_table():
+    random.seed(4)
+    bg = Image.new('RGB', (W, H), (178, 178, 172))
+    px = bg.load()
+    for yy in range(0, H, 2):
+        for xx in range(0, W, 2):
+            v = 178 + random.randint(-6, 6)
+            for a in (0, 1):
+                for b2 in (0, 1):
+                    if xx + a < W and yy + b2 < H: px[xx + a, yy + b2] = (v, v, v - 6)
+    return bg.filter(ImageFilter.GaussianBlur(0.8))
+
+def exposure(img, gain=1.07, blur=0.7):
+    from PIL import ImageEnhance
+    return ImageEnhance.Brightness(img.filter(ImageFilter.GaussianBlur(blur))).enhance(gain)
+
 def background():
     random.seed(3)
     bg = Image.new('RGB', (W, H), (92, 70, 52))
@@ -127,14 +165,14 @@ def perspective_coeffs(src, dst):
         A.append([0, 0, 0, x, y, 1, -v * x, -v * y]); B.append(v)
     return np.linalg.solve(np.array(A, float), np.array(B, float)).tolist()
 
-def card_oblique(card, mask, wpx):
+def card_oblique(card, mask, wpx, k=1.0):
     """Card seen from the upper right (~25 deg): right edge nearer (taller), left edge shorter, slight rotation."""
     hpx = int(wpx * 540 / 856)
     c = card.resize((wpx, hpx), Image.LANCZOS); m = mask.resize((wpx, hpx))
     pad = 40; Wc, Hc = wpx + 2 * pad, hpx + 2 * pad
     src = [(0, 0), (wpx, 0), (wpx, hpx), (0, hpx)]
-    shrink = 0.16 * hpx
-    dst = [(pad + 0.06 * wpx, pad + shrink), (pad + wpx, pad - 0.02 * hpx), (pad + wpx * 0.98, pad + hpx + 0.04 * hpx), (pad + 0.04 * wpx, pad + hpx - shrink * 0.6)]
+    shrink = 0.16 * hpx * k
+    dst = [(pad + 0.06 * wpx * k, pad + shrink), (pad + wpx, pad - 0.02 * hpx * k), (pad + wpx * (1 - 0.02 * k), pad + hpx + 0.04 * hpx * k), (pad + 0.04 * wpx * k, pad + hpx - shrink * 0.6)]
     co = perspective_coeffs(src, dst)
     return c.transform((Wc, Hc), Image.PERSPECTIVE, co, Image.BICUBIC), m.transform((Wc, Hc), Image.PERSPECTIVE, co, Image.BICUBIC)
 
@@ -165,6 +203,38 @@ def phase_feeds():
         f = bg.copy(); f.paste(c, (W // 2 - c.width // 2, cy - c.height // 2), c); fr.append(f)
     write(fr, 'card-far-rotated')
 
+def real_feeds():
+    """Back on a light table (low contrast, slightly soft, bright exposure) and tilted variants."""
+    cy = int(H * 0.42)
+    lt = light_table(); bg = background()
+    cb, mb = make_card_back_real()
+    rnd = random.Random(11)
+    fr = []
+    for i in range(45):
+        f = place(lt, cb, mb, 450 + rnd.randint(-2, 2), W // 2 + rnd.randint(-3, 3), cy + rnd.randint(-3, 3))
+        fr.append(exposure(f))
+    write(fr, 'card-back-real')
+    fr = [exposure(place(bg, cb, mb, 450, W // 2, cy)) for _ in range(30)]
+    write(fr, 'card-back-real-wood')
+    # perspective views for the tilt tests (strong = from the upper right, mild = almost flat, left = wrong side)
+    card, mask = make_card()
+    for nm, k, flip in (('card-tilt-strong', 1.0, False), ('card-tilt-mild', 0.25, False), ('card-tilt-left', 1.0, True)):
+        if flip:  # mirror the geometry, not the print
+            M = Image.FLIP_LEFT_RIGHT
+            oc, om = card_oblique(card.transpose(M), mask.transpose(M), 430, k)
+            oc = oc.transpose(M); om = om.transpose(M)
+        else:
+            oc, om = card_oblique(card, mask, 430, k)
+        fr = []
+        for _ in range(30):
+            f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, cy - oc.height // 2), om); fr.append(f)
+        write(fr, nm)
+    oc, om = card_oblique(cb, mb, 430, 1.0)
+    fr = []
+    for _ in range(30):
+        f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, cy - oc.height // 2), om); fr.append(exposure(f))
+    write(fr, 'card-back-real-tilt')
+
 def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     img = Image.open(os.path.join(HERE, 'feeds', src)).convert('RGB')
     if zoom != 1.0:  # zoom<1: face smaller (user too far) - pad with wall colour
@@ -188,13 +258,17 @@ def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
 
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == 'new':
+        real_feeds(); face_feed('face-profile.jpg', 'face-profile', n=30); sys.exit()
+    if len(sys.argv) > 2 and sys.argv[2] == 'new0':
         phase_feeds(); face_feed('face.jpg', 'face-far-offset', shift_x=60, zoom=0.55, n=30); sys.exit()
     card_feed()
     card_shaky_feed()
     card_forgery_feed()
     phase_feeds()
+    real_feeds()
     face_feed('face.jpg', 'face')
     face_feed('face-mask.jpg', 'face-mask')
     face_feed('face.jpg', 'face-offset', shift_x=150, n=30)   # face to the right of the raw frame
     face_feed('face.jpg', 'face-far', zoom=0.55, n=30)
     face_feed('face.jpg', 'face-far-offset', shift_x=60, zoom=0.55, n=30)  # two problems at once -> one merged hint
+    face_feed('face-profile.jpg', 'face-profile', n=30)       # synthetic person, head turned ~35 deg -> 側臉 hint

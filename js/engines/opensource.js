@@ -1,11 +1,13 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11d):
+// Results (v2026-11-11e):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector } from '../card-detector.js?v=2026-11-11d';
-import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11d';
+import { CardDetector } from '../card-detector.js?v=2026-11-11e';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11e';
+import { SideClassifier } from '../side-classifier.js?v=2026-11-11e';
+import { phrase } from '../hints.js?v=2026-11-11e';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -28,12 +30,20 @@ export class OpenSourceEngine {
    *   minFrames   – keep holding (silently) until this many good frames were collected
    *   collectFront– also return this many distinct good frames in `front` (forgery 'front' images), collected
    *                 silently during the normal hold – the user sees a single capture
+   *   side        – 'front' | 'back' (TW ID): capture only when the portrait check agrees (front = photo found)
    */
-  captureIdCard(ctx) {
-    const det = new CardDetector({ wantThumb: true, ...(ctx.cardOptions || {}) });
+  async captureIdCard(ctx) {
+    const det = new CardDetector({ ...(ctx.cardOptions || {}) });
+    let sideCls = null;
+    if (ctx.side) {
+      sideCls = new SideClassifier();
+      ctx.ui.update({ state: 'loading', hint: '準備相機中…', level: 'adjust', dir: 'wait', progress: 0, metrics: {} });
+      if (!(await sideCls.load())) sideCls = null; // model unavailable: geometry-only (logged)
+    }
+    const GOOD = new Set(['hold', 'steady', 'capture']);
     const KEEP = ctx.keep || CARD_KEEP;
     const MIN = Math.max(ctx.minFrames || 0, ctx.collectFront || 0);
-    const front = [], all = []; let thumb = null; let readySince = 0;
+    const front = [], all = []; let readySince = 0;
     const canvas = document.createElement('canvas');
     const cands = []; // {blob, sharp}
     let lastGrab = 0;
@@ -49,19 +59,31 @@ export class OpenSourceEngine {
       const region = { x: g.x - g.w * m, y: g.y - g.h * m, w: g.w * (1 + 2 * m), h: g.h * (1 + 2 * m) };
       const { img, region: rr, scale } = cam.sample(region, 320, canvas);
       const guideA = { x: (g.x - rr.x) * scale, y: (g.y - rr.y) * scale, w: g.w * scale, h: g.h * scale };
-      const out = det.analyze(img, guideA, ts);
+      let out = det.analyze(img, guideA, ts);
       let rectVideo = null;
       if (out.rect) rectVideo = { x: rr.x + out.rect.x / scale, y: rr.y + out.rect.y / scale, w: out.rect.w / scale, h: out.rect.h / scale };
+      if (sideCls && !ctx.forceRef.now) {
+        sideCls.tick(ts, !!out.rect && out.metrics.found >= 3);
+        if (rectVideo && GOOD.has(out.state)) sideCls.observe(cam.video, rectVideo, ts);
+        const v = sideCls.verdict();
+        out.metrics.side = v || '?'; out.metrics.votes = sideCls.summary;
+        if (v && v !== ctx.side && rectVideo) {
+          // wrong side in view: never capture it; drop anything collected from it
+          det.steadySince = 0; cands.length = 0; front.length = 0; all.length = 0; readySince = 0;
+          out = { ...out, state: 'wrongside', ...phrase(ctx.side === 'front' ? 'card.wrongBack' : 'card.wrongFront'), ready: false, progress: 0 };
+        } else if (v !== ctx.side && (out.ready || out.state === 'hold')) {
+          out = { ...out, state: 'hold', ...phrase('card.sideCheck'), ready: false, progress: Math.min(out.progress || 0, 0.8) };
+        }
+      }
       ctx.ui.update(out, rectVideo ? cam.videoToDisplay(rectVideo) : null);
       // every frame that passes all checks (holding still) is a candidate for the OCR set
       if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= (MIN > KEEP ? 80 : CARD_GRAB_MS)) {
         lastGrab = ts;
-        const b = await cam.grab(pad(rectVideo, 0.04), 1600);
+        const b = await cam.grab(pad(rectVideo, det.o.mode === 'rightSide' ? 0.07 : 0.04), 1600);
         keep(b, out.metrics.sharp || 0);
         if (ctx.collectFront && front.length < ctx.collectFront) front.push(b);
         if (MIN > KEEP) all.push(b);
       }
-      if (out.thumb) thumb = out.thumb;
       const collected = MIN > KEEP ? all.length : cands.length;
       if (out.ready && !ctx.forceRef.now && collected < MIN) {
         // all checks passed; keep "capturing" a little longer to gather the extra frames silently
@@ -73,7 +95,7 @@ export class OpenSourceEngine {
           const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
           keep(await cam.grab(src, 1600), ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0));
         }
-        const res = { image: cands[0].blob, frames: cands.map(c => c.blob), thumb };
+        const res = { image: cands[0].blob, frames: cands.map(c => c.blob), side: sideCls ? sideCls.verdict() : null, votes: sideCls ? sideCls.summary : '', metrics: out.metrics };
         if (ctx.collectFront) res.front = front.length ? front.slice() : [cands[0].blob];
         if (MIN > KEEP) res.all = all.slice(-MIN);
         if (ctx.grabFull) res.full = await cam.grab({ x: 0, y: 0, w: cam.video.videoWidth, h: cam.video.videoHeight }, 1600);

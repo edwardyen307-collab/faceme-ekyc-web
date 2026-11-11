@@ -22,9 +22,18 @@ export const PHRASES = {
   'card.capture': P('good', 'ok', '正在拍攝…'),
   // forgery rightSide shot (phone moved to the upper-right of the card, tilted ~20–30°)
   'card.flip': P('adjust', 'flip', '請把身分證翻到背面'),
-  'card.flipSame': P('adjust', 'flip', '還是正面喔，請把身分證翻到背面'),
   'card.rs.search': P('adjust', 'tiltright', '把手機移到證件右上方，斜斜往下拍', '請從證件的右上方斜拍，證件仍要整張在框內', '手機往右邊移、鏡頭朝向證件，讓證件斜斜地出現在框內'),
   'card.rs.flat': P('adjust', 'tiltright', '再斜一點：手機往右上方移，鏡頭朝證件', '請從右上方約 30 度斜拍，不要正對證件'),
+  'card.rs.inframe': P('adjust', 'farther', '證件有一角跑出畫面，請把手機拿遠一點，整張證件都要看得到'),
+  'card.rs.center': P('adjust', 'frame', '請讓證件位在斜框中間（保持斜角）'),
+  'card.rs.wrongSide': P('adjust', 'tiltright', '方向反了：請把手機移到證件的「右」上方斜拍'),
+  'card.rs.tooMuch': P('adjust', 'flat', '斜太多了，手機稍微回正一點'),
+  'card.rs.steady': P('adjust', 'still', '角度很好，請拿穩不要晃動'),
+  'card.rs.hold': P('good', 'ok', '角度很好，請保持不動'),
+  // front/back check on TW ID (portrait photo = front)
+  'card.wrongBack': P('problem', 'flip', '這是背面，請翻到有照片的正面'),
+  'card.wrongFront': P('problem', 'flip', '這是正面，請翻到背面（沒有照片的那面）'),
+  'card.sideCheck': P('good', 'ok', '很好，請保持不動'),
   'card.rs.near': P('adjust', 'farther', '太近了，請把手機拿遠一點，證件四角都要看得到'),
   'card.rs.small': P('adjust', 'closer', '證件太小了，請把手機靠近一點（保持斜角）'),
 
@@ -38,6 +47,8 @@ export const PHRASES = {
   'face.down': P('adjust', 'down', '臉偏下了，請把手機放低一點', '請把手機往下移，讓臉回到框中央'),
   'face.far': P('adjust', 'closer', '請把手機拿近一點，讓臉填滿橢圓框', '靠近一點', '臉太小了，手機再靠近一些'),
   'face.near': P('adjust', 'farther', '太近了，請把手機拿遠一點', '退後一點', '臉超出框了，請把手臂伸直一點'),
+  'face.profileL': P('problem', 'left', '偵測到側臉，請把臉往左轉，正面對鏡頭'),
+  'face.profileR': P('problem', 'right', '偵測到側臉，請把臉往右轉，正面對鏡頭'),
   'face.turnLeft': P('adjust', 'left', '請正面看鏡頭，頭往左轉一點', '鼻子對準鏡頭，臉稍微往左轉'),
   'face.turnRight': P('adjust', 'right', '請正面看鏡頭，頭往右轉一點', '鼻子對準鏡頭，臉稍微往右轉'),
   'face.front': P('adjust', 'frame', '請正面看鏡頭', '眼睛直視鏡頭，臉不要側轉'),

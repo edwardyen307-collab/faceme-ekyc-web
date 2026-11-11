@@ -11,9 +11,9 @@ EXTRA = json.loads(os.environ.get('EKYC_CFG', '{}'))
 QUERY = os.environ.get('EKYC_QUERY', '')
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
 PHASEMAP = json.loads(os.environ.get('PHASEMAP', 'null') or 'null') or {
-    'front': 'card', 'tilt': 'card-front-oblique', 'flip': 'card-front',
-    'back': ['card-front', 2500, 'card-back'],   # first still shows the front -> "please flip" hint, then the back
-    'tiltBack': 'card-back-oblique'}
+    'front': 'card', 'tilt': 'card-tilt-strong', 'flip': 'card-front',
+    'back': ['card-front', 2500, 'card-back-real'],   # first still shows the FRONT (must be refused), then a pale real-looking back
+    'tiltBack': 'card-back-real-tilt'}
 INIT = """
 (() => {
   const PHASEMAP = %s;

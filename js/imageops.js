@@ -69,3 +69,17 @@ export function meanAbsDiff(a, b, step = 7) {
   for (let i = 0; i < a.length; i += step) { s += Math.abs(a[i] - b[i]); n++; }
   return s / n;
 }
+
+/** Median luminance and fraction of glare pixels (>= max(minThr, median + rel)) inside rect, subsampled.
+ *  A pale card (e.g. the TW ID back) is bright everywhere; only pixels clearly brighter than the card itself count as glare. */
+export function glareStats(gray, width, height, x0, y0, x1, y1, minThr = 250, rel = 14, step = 2) {
+  x0 = Math.max(0, x0 | 0); y0 = Math.max(0, y0 | 0);
+  x1 = Math.min(width - 1, x1 | 0); y1 = Math.min(height - 1, y1 | 0);
+  const hist = new Uint32Array(256); let n = 0;
+  for (let y = y0; y <= y1; y += step) { const r = y * width; for (let x = x0; x <= x1; x += step) { hist[Math.min(255, gray[r + x] | 0)]++; n++; } }
+  if (!n) return { median: 0, glareFrac: 0, thr: 255 };
+  let acc = 0, med = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n / 2) { med = v; break; } }
+  const thr = Math.min(255, Math.max(minThr, med + rel));
+  let g = 0; for (let v = thr; v < 256; v++) g += hist[v];
+  return { median: med, glareFrac: g / n, thr };
+}
