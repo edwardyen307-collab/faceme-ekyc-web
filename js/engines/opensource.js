@@ -1,11 +1,11 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11c):
+// Results (v2026-11-11d):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector } from '../card-detector.js?v=2026-11-11c2';
-import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11c2';
+import { CardDetector } from '../card-detector.js?v=2026-11-11d';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11d';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -22,10 +22,18 @@ export class OpenSourceEngine {
 
   cancel() { if (this._cancel) this._cancel(); }
 
-  /** ctx: { camera, ui, getGuide(): display rect, forceRef: {now:boolean}, cardOptions?, keep?, grabFull? } */
+  /**
+   * ctx: { camera, ui, getGuide(): display rect, forceRef: {now:boolean}, cardOptions?, keep?, minFrames?, collectFront?, grabFull? }
+   *   keep        – best-N frames returned in `frames` (default 3, for OCR)
+   *   minFrames   – keep holding (silently) until this many good frames were collected
+   *   collectFront– also return this many distinct good frames in `front` (forgery 'front' images), collected
+   *                 silently during the normal hold – the user sees a single capture
+   */
   captureIdCard(ctx) {
-    const det = new CardDetector(ctx.cardOptions || {});
+    const det = new CardDetector({ wantThumb: true, ...(ctx.cardOptions || {}) });
     const KEEP = ctx.keep || CARD_KEEP;
+    const MIN = Math.max(ctx.minFrames || 0, ctx.collectFront || 0);
+    const front = [], all = []; let thumb = null; let readySince = 0;
     const canvas = document.createElement('canvas');
     const cands = []; // {blob, sharp}
     let lastGrab = 0;
@@ -46,16 +54,28 @@ export class OpenSourceEngine {
       if (out.rect) rectVideo = { x: rr.x + out.rect.x / scale, y: rr.y + out.rect.y / scale, w: out.rect.w / scale, h: out.rect.h / scale };
       ctx.ui.update(out, rectVideo ? cam.videoToDisplay(rectVideo) : null);
       // every frame that passes all checks (holding still) is a candidate for the OCR set
-      if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= CARD_GRAB_MS) {
+      if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= (MIN > KEEP ? 80 : CARD_GRAB_MS)) {
         lastGrab = ts;
-        keep(await cam.grab(pad(rectVideo, 0.04), 1600), out.metrics.sharp || 0);
+        const b = await cam.grab(pad(rectVideo, 0.04), 1600);
+        keep(b, out.metrics.sharp || 0);
+        if (ctx.collectFront && front.length < ctx.collectFront) front.push(b);
+        if (MIN > KEEP) all.push(b);
+      }
+      if (out.thumb) thumb = out.thumb;
+      const collected = MIN > KEEP ? all.length : cands.length;
+      if (out.ready && !ctx.forceRef.now && collected < MIN) {
+        // all checks passed; keep "capturing" a little longer to gather the extra frames silently
+        if (!readySince) readySince = ts;
+        if (ts - readySince < 4000) return null;
       }
       if (out.ready || ctx.forceRef.now) {
         if (!cands.length || ctx.forceRef.now) {
           const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : pad(g, 0.02);
           keep(await cam.grab(src, 1600), ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0));
         }
-        const res = { image: cands[0].blob, frames: cands.map(c => c.blob) };
+        const res = { image: cands[0].blob, frames: cands.map(c => c.blob), thumb };
+        if (ctx.collectFront) res.front = front.length ? front.slice() : [cands[0].blob];
+        if (MIN > KEEP) res.all = all.slice(-MIN);
         if (ctx.grabFull) res.full = await cam.grab({ x: 0, y: 0, w: cam.video.videoWidth, h: cam.video.videoHeight }, 1600);
         return res;
       }

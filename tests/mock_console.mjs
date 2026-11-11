@@ -1,7 +1,7 @@
 // Fake eKYC Console for tests (NOT the real API). Parses multipart field names/counts and answers
 // with documented response shapes. MOCK_SCENARIO=ok (default) | needmore | errors
 import http from 'node:http';
-const SC = process.env.MOCK_SCENARIO || 'ok';
+const SC = process.env.MOCK_SCENARIO || 'ok'  // ok | needmore | errors | nomatch;
 const PORT = Number(process.env.MOCK_PORT || 18790);
 function parse(body, ctype) {
   const b = (ctype.match(/boundary=(.+)$/) || [])[1];
@@ -48,6 +48,7 @@ http.createServer((req, res) => {
     }
     if (req.url.endsWith('/compare-boost/idcard')) {
       if (SC === 'errors') return send(503, { message: 'Please setup FaceMe Platform first.' });
+      if (SC === 'nomatch') return send(200, { isMatch: false, similarity: 0.41, thresholds: { idcard: 0.68 } });
       return send(200, { thresholds: { idcard: 0.68 }, isMatch: true, similarity: 0.93, faceInfo: { boundingBox: { left: 10, top: 10, right: 90, bottom: 110 } }, face2Info: { boundingBox: { left: 100, top: 80, right: 300, bottom: 330 } } });
     }
     send(404, { message: 'not found' });

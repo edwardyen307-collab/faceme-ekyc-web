@@ -147,4 +147,52 @@ body.sheet-open { overflow:hidden; }
 .strip { display:flex; gap:6px; overflow-x:auto; padding-bottom:4px; }
 .strip figure { margin:0; flex:0 0 auto; text-align:center; font-size:11px; opacity:.9; }
 .strip img { height:64px; width:auto; border-radius:6px; display:block; background:#000; }
-.inactive > :not(legend):not(#real-note) { opacity:.65; }
+.inactive { opacity:.55; }
+
+/* ---- v2026-11-11d ---- */
+.help { display:block; font-size:12px; color:#9fb0c6; line-height:1.45; margin:4px 0; font-weight:400; }
+.chk span small { display:block; font-size:12px; color:#9fb0c6; margin-top:2px; }
+.sheet .adv { margin:12px 0; border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px 12px; }
+.sheet .adv summary { font-size:14px; color:#c7d2e0; min-height:36px; display:flex; align-items:center; cursor:pointer; }
+.sheet .adv .chk { font-size:14px; }
+#real-fields { margin-top:4px; }
+/* demo animations (tilt / flip) */
+.demo { position:absolute; left:50%; transform:translateX(-50%); bottom:44px; z-index:4; display:flex; flex-direction:column; align-items:center; gap:4px;
+  background:rgba(0,0,0,.72); border-radius:14px; padding:8px 14px; font-size:15px; font-weight:700; text-align:center; }
+.demo svg { display:none; }
+.demo.tilt #demo-tilt, .demo.flip #demo-flip { display:block; }
+.d-card { fill:#dbeafe; stroke:#fff; stroke-width:1.5; }
+.d-photo { fill:#94a3b8; } .d-line { fill:#64748b; }
+.d-phone rect { fill:#111827; stroke:#fbbf24; stroke-width:2; } .d-lens { fill:#fbbf24; }
+.d-phone { transform-box:fill-box; transform-origin:50% 50%; animation:phoneTilt 2.4s ease-in-out infinite; }
+@keyframes phoneTilt { 0%,15% { transform:translate(36px,-2px) rotate(0deg); } 55%,85% { transform:translate(84px,-4px) rotate(28deg); } 100% { transform:translate(36px,-2px) rotate(0deg); } }
+.d-flip { transform-box:fill-box; transform-origin:50% 50%; animation:cardFlip 2.2s ease-in-out infinite; }
+@keyframes cardFlip { 0%,20% { transform:scaleX(1); } 45% { transform:scaleX(.05); } 50%,70% { transform:scaleX(-1); } 100% { transform:scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .d-phone, .d-flip { animation:none; } }
+.guide.tilted { stroke-dasharray:14 8; }
+.ring { position:absolute; right:16px; bottom:48px; z-index:4; width:44px; height:44px; border-radius:50%;
+  background:conic-gradient(var(--ok) calc(var(--p,0) * 1%), rgba(255,255,255,.25) 0); }
+.ring::after { content:''; position:absolute; inset:7px; border-radius:50%; background:rgba(0,0,0,.7); }
+/* review */
+.back-fig { margin:0 12px 10px; background:var(--card); border-radius:12px; padding:8px; }
+.back-fig figcaption { font-size:14px; font-weight:600; margin-bottom:6px; }
+.back-fig img { width:62%; margin:0 auto; max-height:22vh; object-fit:contain; border-radius:8px; background:#000; display:block; }
+.match { margin:0 12px 12px; padding:14px; background:var(--card); border-radius:14px; border:2px solid rgba(59,130,246,.6); }
+.match h3 { margin:0 0 4px; font-size:19px; }
+.match-result { margin-top:12px; padding:14px; border-radius:12px; text-align:center; }
+.match-result .big { font-size:30px; font-weight:900; line-height:1.2; }
+.match-result .num { font-size:16px; margin-top:6px; }
+.match-result.yes { background:#14532d; border:2px solid #4ade80; }
+.match-result.no { background:#7f1d1d; border:2px solid #fca5a5; }
+.match-result.mock { background:#334155; border:2px dashed #94a3b8; }
+.match-result.err { background:#3f3f46; border:2px solid #f87171; }
+.match-result .tag { display:inline-block; font-size:13px; font-weight:800; padding:2px 10px; border-radius:999px; background:#fde68a; color:#111; margin-bottom:6px; }
+details.forgery-fig { margin:0 12px 10px; background:transparent; padding:4px 8px; font-size:13px; opacity:.85; }
+details.forgery-fig summary { cursor:pointer; }
+.d-flip .d-card { animation:flipFill 2.2s steps(1, end) infinite; }
+.d-flip .d-photo, .d-flip .d-line { animation:flipHide 2.2s steps(1, end) infinite; }
+@keyframes flipFill { 0% { fill:#dbeafe; } 46% { fill:#f1e7cf; } 86% { fill:#dbeafe; } }
+@keyframes flipHide { 0% { opacity:1; } 46% { opacity:.25; } 86% { opacity:1; } }
+.sheet .adv summary::before { content:'▸'; margin-right:8px; transition:transform .2s; }
+.sheet .adv[open] summary::before { transform:rotate(90deg); }
+.sheet .adv summary::-webkit-details-marker { display:none; }

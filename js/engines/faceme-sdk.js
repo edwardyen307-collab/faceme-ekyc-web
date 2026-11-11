@@ -119,14 +119,21 @@ export class FaceMeSdkEngine {
   _hintStyle() { return { fontSize: '18px', color: '#ffffff', fontFamily: '-apple-system, "PingFang TC", "Noto Sans TC", sans-serif' }; }
 
   /** Forgery shots (front / rightSide) use the built-in detector. */
-  captureCardShot(ctx) {
+  async captureCardShot(ctx) {
     if (!this.fallback) throw new Error('需要預設引擎來拍攝防偽影像');
+    if (!ctx.camera.stream) await ctx.camera.open('environment'); // the SDK capture released the camera
     return this.fallback.captureIdCard(ctx);
   }
 
   /** ctx.cardType = eKYC OCR type. Returns { image, frames[], scores[] }. */
   async captureIdCard(ctx) {
     const step = ID_CARD_STEP[ctx.cardType];
+    // forgery needs several distinct front frames (and the two-sided flow a reference thumbnail), which the SDK
+    // capture does not return: use the built-in detector for that side.
+    if (this.fallback && (ctx.collectFront || (ctx.cardOptions && ctx.cardOptions.refThumb))) {
+      if (!ctx.camera.stream) await ctx.camera.open('environment');
+      return this.fallback.captureIdCard(ctx);
+    }
     if (!step) {
       if (this.fallback) return this.fallback.captureIdCard(ctx);
       throw new Error('FaceMe SDK 不支援自動拍攝此證件類型：' + ctx.cardType);

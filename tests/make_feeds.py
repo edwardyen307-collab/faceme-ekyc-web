@@ -37,6 +37,27 @@ def make_card():
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=36, fill=255)
     return card, mask
 
+def make_card_back():
+    """Synthetic ID back: different layout (address rows, barcode) so it differs from the front."""
+    cw, ch = 856, 540
+    card = Image.new('RGB', (cw, ch), (232, 226, 210))
+    d = ImageDraw.Draw(card)
+    for i in range(0, ch, 18):
+        d.line([(0, i), (cw, i + 40)], fill=(224, 216, 198), width=2)
+    d.text((30, 20), '測試用背面樣本 SAMPLE BACK', font=font(34), fill=(90, 60, 30))
+    rows = [('父', '王測一'), ('母', '李測二'), ('配偶', '—'), ('出生地', '測試市'), ('住址', '測試市測試區範例路 1 號')]
+    y = 90
+    for k, v in rows:
+        d.text((36, y), k, font=font(28), fill=(80, 80, 80))
+        d.text((160, y), v, font=font(32), fill=(10, 10, 10))
+        y += 62
+    rnd = random.Random(5); x = 40
+    while x < cw - 60:
+        wbar = rnd.choice([3, 5, 8]); d.rectangle([x, 430, x + wbar, 510], fill=(0, 0, 0)); x += wbar + rnd.choice([3, 4, 6])
+    mask = Image.new('L', (cw, ch), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, cw - 1, ch - 1], radius=36, fill=255)
+    return card, mask
+
 def background():
     random.seed(3)
     bg = Image.new('RGB', (W, H), (92, 70, 52))
@@ -126,6 +147,24 @@ def card_forgery_feed():
         f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, int(H * 0.42) - oc.height // 2), om); frames.append(f)
     write(frames, 'card-forgery')
 
+def phase_feeds():
+    """Still feeds per capture phase (the full-flow test switches feeds by app phase)."""
+    bg = background(); cy = int(H * 0.42)
+    for (card, mask), nm in ((make_card(), 'card-front'), (make_card_back(), 'card-back')):
+        write([place(bg, card, mask, 450, W // 2, cy) for _ in range(30)], nm)
+        oc, om = card_oblique(card, mask, 430)
+        fr = []
+        for _ in range(30):
+            f = bg.copy(); f.paste(oc, (W // 2 - oc.width // 2, cy - oc.height // 2), om); fr.append(f)
+        write(fr, nm + '-oblique')
+    # front card held slightly rotated and far away (two problems at once -> one merged hint)
+    card, mask = make_card(); fr = []
+    c = card.resize((300, int(300 * 540 / 856)), Image.LANCZOS).convert('RGBA'); m = mask.resize(c.size)
+    c.putalpha(m); c = c.rotate(14, expand=True, resample=Image.BICUBIC)
+    for _ in range(30):
+        f = bg.copy(); f.paste(c, (W // 2 - c.width // 2, cy - c.height // 2), c); fr.append(f)
+    write(fr, 'card-far-rotated')
+
 def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
     img = Image.open(os.path.join(HERE, 'feeds', src)).convert('RGB')
     if zoom != 1.0:  # zoom<1: face smaller (user too far) - pad with wall colour
@@ -149,11 +188,13 @@ def face_feed(src, name, shift_x=0, zoom=1.0, n=75):
 
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == 'new':
-        card_shaky_feed(); card_forgery_feed(); sys.exit()
+        phase_feeds(); face_feed('face.jpg', 'face-far-offset', shift_x=60, zoom=0.55, n=30); sys.exit()
     card_feed()
     card_shaky_feed()
     card_forgery_feed()
+    phase_feeds()
     face_feed('face.jpg', 'face')
     face_feed('face-mask.jpg', 'face-mask')
     face_feed('face.jpg', 'face-offset', shift_x=150, n=30)   # face to the right of the raw frame
     face_feed('face.jpg', 'face-far', zoom=0.55, n=30)
+    face_feed('face.jpg', 'face-far-offset', shift_x=60, zoom=0.55, n=30)  # two problems at once -> one merged hint

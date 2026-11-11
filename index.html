@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1f33">
 <meta name="robots" content="noindex">
-<title>eKYC · FaceMe 預覽 v2026-11-11c</title>
+<title>eKYC · FaceMe 預覽 v2026-11-11d</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="styles.css?v=2026-11-11c2">
+<link rel="stylesheet" href="styles.css?v=2026-11-11d">
 </head>
 <body>
 <header class="top">
@@ -19,7 +19,7 @@
       <span>設定</span>
     </button>
   </div>
-  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11c</h1>
+  <h1 id="app-title">eKYC · FaceMe 預覽 v2026-11-11d</h1>
   <ol class="steps" aria-label="步驟">
     <li data-step="card"><span>1</span>拍證件</li>
     <li data-step="face"><span>2</span>拍人臉</li>
@@ -33,7 +33,7 @@
       <h2 id="intro-h">線上身分驗證</h2>
       <p>接下來會依序：</p>
       <ol class="howto">
-        <li><b>拍攝身分證件正面</b>：使用後鏡頭，把證件放進框內，系統會自動拍照。</li>
+        <li><b>拍攝證件</b>：使用後鏡頭，把證件放進框內，系統會自動拍照（選「身分證兩面」會再請你翻面）。</li>
         <li><b>拍攝人臉</b>：切換成自拍鏡頭，正面看鏡頭、臉放進橢圓框並保持不動，系統會自動拍照。</li>
         <li><b>確認照片</b>：可重拍或上傳。</li>
       </ol>
@@ -62,8 +62,18 @@
         <span id="hint-icon" class="hint-icon" aria-hidden="true"></span>
         <span id="hint" class="hint-text">準備相機中…</span>
       </div>
-      <div id="shot-count" class="shot-count" hidden></div>
-      <div id="shot-guide" class="shot-guide" hidden></div>
+      <div id="demo" class="demo" hidden aria-hidden="true">
+        <svg id="demo-tilt" viewBox="0 0 120 80" width="120" height="80">
+          <rect x="18" y="38" width="62" height="38" rx="5" class="d-card"/>
+          <g class="d-phone"><rect x="0" y="0" width="26" height="44" rx="5"/><circle cx="13" cy="7" r="3" class="d-lens"/></g>
+        </svg>
+        <svg id="demo-flip" viewBox="0 0 120 80" width="120" height="80">
+          <g class="d-flip"><rect x="25" y="16" width="70" height="46" rx="6" class="d-card"/><rect x="31" y="22" width="20" height="26" rx="2" class="d-photo"/>
+          <rect x="56" y="24" width="32" height="4" class="d-line"/><rect x="56" y="32" width="26" height="4" class="d-line"/><rect x="56" y="40" width="30" height="4" class="d-line"/></g>
+        </svg>
+        <span id="demo-text"></span>
+      </div>
+      <div id="ring" class="ring" hidden></div>
       <div id="progress" class="progress"><i></i></div>
       <div id="flash" class="flash"></div>
       <div id="stage-title" class="stage-title"></div>
@@ -81,11 +91,20 @@
       <figure><figcaption>① 證件照</figcaption><img id="img-card" alt="拍攝的證件照"><small id="card-meta" class="meta"></small></figure>
       <figure><figcaption>② 人臉照</figcaption><img id="img-face" alt="拍攝的人臉照"><small id="face-meta" class="meta"></small></figure>
     </div>
-    <figure id="forgery-fig" class="forgery-fig" hidden>
-      <figcaption>③ 證件防偽影像</figcaption>
+    <figure id="back-fig" class="back-fig" hidden>
+      <figcaption>① 證件背面</figcaption><img id="img-back" alt="拍攝的證件背面"><small id="back-meta" class="meta"></small>
+    </figure>
+    <section id="match" class="match" aria-labelledby="match-h">
+      <h3 id="match-h">人證比對</h3>
+      <p class="note">比對證件上的照片和你的自拍，確認是不是同一個人。</p>
+      <button id="btn-match" class="btn primary big" type="button">開始人證比對</button>
+      <div id="match-result" class="match-result" role="status" hidden></div>
+    </section>
+    <details id="forgery-fig" class="forgery-fig" hidden>
+      <summary>證件真偽辨識影像（<span id="forgery-count">0</span> 張）</summary>
       <div id="forgery-strip" class="strip"></div>
       <small id="forgery-meta" class="meta"></small>
-    </figure>
+    </details>
     <div id="upload-mode" class="badge"></div>
     <div class="review-actions">
       <button id="btn-upload" class="btn primary big" type="button">上傳</button>
@@ -112,43 +131,41 @@
       <button id="btn-settings-close" class="btn" type="button" data-close>完成</button>
     </div>
     <form id="admin-form" autocomplete="off" onsubmit="return false">
-      <p class="note">變更會立即套用並記在這台裝置；Access Token 與 platform-auth 只放在記憶體，不會儲存。</p>
+      <p class="help">改了就生效，會記在這支手機。金鑰不會儲存。</p>
       <fieldset>
-        <legend>證件防偽</legend>
-        <label class="chk"><input type="checkbox" name="doForgery"><span>證件防偽檢查（idcard/forgery，僅國民身分證正／背面）：拍完證件後，加拍 5 張正面＋2 張右上斜拍</span></label>
+        <legend>檢查項目</legend>
+        <label class="chk"><input type="checkbox" name="doSpoof" checked><span>真人檢查<small>確認是本人在鏡頭前，不是照片或影片</small></span></label>
+        <label class="chk sub"><input type="checkbox" name="deepfake"><span>偵測 AI 合成臉</span></label>
+        <label class="chk sub"><input type="checkbox" name="strictMode"><span>加強防翻拍<small>需 FaceMe 元件</small></span></label>
+        <label class="chk"><input type="checkbox" name="doOcr" checked><span>讀取證件資料<small>自動讀出姓名、身分證字號等</small></span></label>
+        <label class="chk"><input type="checkbox" name="doCompare" checked><span>人證比對<small>證件照片和自拍是不是同一人</small></span></label>
+        <label class="chk"><input type="checkbox" name="doForgery"><span>證件真偽辨識<small>僅身分證；會請你斜拍一下證件</small></span></label>
       </fieldset>
       <fieldset>
         <legend>上傳方式</legend>
-        <label class="chk"><input type="radio" name="mode" value="mock" checked><span>模擬上傳（資料不離開手機）</span></label>
-        <label class="chk"><input type="radio" name="mode" value="real"><span>實際上傳到 FaceMe eKYC Console</span></label>
+        <label class="chk"><input type="radio" name="mode" value="mock" checked><span>模擬<small>不傳出任何資料</small></span></label>
+        <label class="chk"><input type="radio" name="mode" value="real"><span>實際上傳</span></label>
+        <div id="real-fields">
+          <label class="field">伺服器網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://..."></label>
+          <label class="field">存取金鑰<small class="help">不會儲存，關閉頁面就清除</small><input name="token" type="password" autocomplete="off"></label>
+        </div>
       </fieldset>
-      <fieldset id="real-fields">
-        <legend>實際上傳設定</legend>
-        <p id="real-note" class="note">下列設定只在「實際上傳」時使用。</p>
-        <label class="field">eKYC Console／代理網址<input name="baseUrl" type="url" inputmode="url" placeholder="https://ekyc.example.com"></label>
-        <label class="field">Access Token（Authorization，不儲存）<input name="token" type="password" autocomplete="off"></label>
-        <label class="field">platform-auth（選填，固定值，不儲存）<input name="platformAuth" type="password" autocomplete="off"></label>
-        <label class="chk"><input type="checkbox" name="useRequest"><span>先建立 eKYC 案件（/api/request/），用回傳的 platformToken 當 platform-auth</span></label>
-        <label class="field sub">範本 UUID（requestTemplateUuid；經由代理時可留空）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
-        <p class="note">依序呼叫：</p>
-        <label class="chk"><input type="checkbox" name="doSpoof" checked><span>① 人臉活體檢查（face/spoofingcheck，送出整段人臉序列）</span></label>
-        <label class="chk sub"><input type="checkbox" name="strictMode"><span>enableStrictMode（僅限 FaceMe Web SDK 引擎）</span></label>
-        <label class="chk sub"><input type="checkbox" name="deepfake"><span>enableDeepfakeDetect</span></label>
-        <label class="chk sub"><input type="checkbox" name="stillZeroBased"><span>still 從 0 起算（預設從 1 起算）</span></label>
-        <label class="chk"><input type="checkbox" name="doOcr" checked><span>② 證件 OCR（idcard/ocr，送出最清晰 3 張）</span></label>
-        <label class="chk sub"><input type="checkbox" name="imageDeskewed"><span>imageDeskewed（影像已校正）</span></label>
-        <label class="chk"><input type="checkbox" name="doCompare" checked><span>③ 證件與人臉 1:1 比對（compare-boost/idcard）</span></label>
-        <label class="chk sub"><input type="checkbox" name="idLargestFace" checked><span>證件影像有多張臉時取最大（multipleFacePriority1=Largest）</span></label>
-        <p class="note">④ 證件防偽（idcard/forgery）在上方「證件防偽」開啟。瀏覽器直連 Console 通常會被 CORS 擋下，建議經由 <code>proxy/ekyc-proxy.mjs</code> 這類後端代理。</p>
-      </fieldset>
-      <fieldset>
-        <legend>偵測引擎</legend>
-        <p id="engine-label" class="note"></p>
-        <p class="note">改用 FaceMe Web SDK：網址加 <code>?engine=faceme&amp;sdk=./sdk/faceme-web-sdk.js</code>（SDK 與模型檔需從 FaceMe Platform Central 另行取得，不在此 repo；.fmin 需以 application/octet-stream 提供）。</p>
-      </fieldset>
+      <details class="adv">
+        <summary>進階（技術人員）</summary>
+        <p class="help">實際上傳的技術選項。一般測試不用改。</p>
+        <label class="field">平台金鑰（platform-auth，不儲存）<input name="platformAuth" type="password" autocomplete="off"></label>
+        <label class="chk"><input type="checkbox" name="useRequest"><span>每次先建立案件<small>/api/request/，以回傳的 platformToken 當平台金鑰</small></span></label>
+        <label class="field">案件範本 ID（requestTemplateUuid）<input name="templateUuid" type="text" autocomplete="off" spellcheck="false"></label>
+        <label class="chk"><input type="checkbox" name="idLargestFace" checked><span>證件有多張臉時取最大<small>multipleFacePriority1=Largest</small></span></label>
+        <label class="chk"><input type="checkbox" name="imageDeskewed"><span>證件影像已校正<small>imageDeskewed</small></span></label>
+        <label class="chk"><input type="checkbox" name="stillZeroBased"><span>靜止影格從 0 起算<small>detail.stg1_act_1.still，預設從 1</small></span></label>
+        <p class="help">API：face/spoofingcheck（features：enableStrictMode／enableDeepfakeDetect）→ idcard/ocr → face/compare-boost/idcard → idcard/forgery。瀏覽器直連通常會被 CORS 擋，建議經由 proxy/ekyc-proxy.mjs。</p>
+        <p id="engine-label" class="help"></p>
+        <p class="help">FaceMe Web SDK：網址加 ?engine=faceme&amp;sdk=./sdk/faceme-web-sdk.js（SDK 不在此 repo；.fmin 需 application/octet-stream）。</p>
+      </details>
     </form>
   </div>
 </div>
-<script type="module" src="js/app.js?v=2026-11-11c2"></script>
+<script type="module" src="js/app.js?v=2026-11-11d"></script>
 </body>
 </html>

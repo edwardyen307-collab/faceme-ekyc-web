@@ -4,8 +4,8 @@
 //   captureFace(ctx): Promise<{image, frames[], still?, cameraInfo?, detail?}>
 //   cancel(): void
 // ctx = { camera, stage, ui:{update(out, rectDisplay?)}, getGuide(), forceRef:{now}, cardType }
-import { OpenSourceEngine } from './opensource.js?v=2026-11-11c2';
-import { FaceMeSdkEngine } from './faceme-sdk.js?v=2026-11-11c2';
+import { OpenSourceEngine } from './opensource.js?v=2026-11-11d';
+import { FaceMeSdkEngine } from './faceme-sdk.js?v=2026-11-11d';
 
 export function createEngine(kind, opts = {}) {
   if (kind === 'faceme') return new FaceMeSdkEngine({ ...opts, fallback: new OpenSourceEngine() });

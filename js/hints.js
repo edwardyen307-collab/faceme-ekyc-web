@@ -1,5 +1,5 @@
-// Guidance phrases. Each key has several clear variants; the variant rotates while the same
-// problem persists (and when it comes back), so the prompt does not feel repetitive.
+// Guidance phrases. The first variant is the one shown (stable; no rotation). Extra variants are kept as
+// alternative wordings for future tuning.
 // level: 'problem' (red) | 'adjust' (amber) | 'good' (green). dir: arrow/icon shown in the banner.
 const P = (level, dir, ...texts) => ({ level, dir, texts });
 export const PHRASES = {
@@ -21,8 +21,10 @@ export const PHRASES = {
   'card.hold': P('good', 'ok', '很好，請保持不動', '很好！保持這個位置', '就是這樣，再撐一下下'),
   'card.capture': P('good', 'ok', '正在拍攝…'),
   // forgery rightSide shot (phone moved to the upper-right of the card, tilted ~20–30°)
-  'card.rs.search': P('adjust', 'tiltright', '把手機移到證件右上方，斜斜往左下拍', '請從證件的右上方斜拍，證件仍要整張在框內', '手機往右邊移、鏡頭朝向證件，讓證件斜斜地出現在框內'),
-  'card.rs.flat': P('adjust', 'tiltright', '還不夠斜，請把手機再往右側傾斜一點', '請從右上方約 30 度斜拍，不要正對證件'),
+  'card.flip': P('adjust', 'flip', '請把身分證翻到背面'),
+  'card.flipSame': P('adjust', 'flip', '還是正面喔，請把身分證翻到背面'),
+  'card.rs.search': P('adjust', 'tiltright', '把手機移到證件右上方，斜斜往下拍', '請從證件的右上方斜拍，證件仍要整張在框內', '手機往右邊移、鏡頭朝向證件，讓證件斜斜地出現在框內'),
+  'card.rs.flat': P('adjust', 'tiltright', '再斜一點：手機往右上方移，鏡頭朝證件', '請從右上方約 30 度斜拍，不要正對證件'),
   'card.rs.near': P('adjust', 'farther', '太近了，請把手機拿遠一點，證件四角都要看得到'),
   'card.rs.small': P('adjust', 'closer', '證件太小了，請把手機靠近一點（保持斜角）'),
 
@@ -34,8 +36,8 @@ export const PHRASES = {
   'face.right': P('adjust', 'left', '臉偏右了，請往左移一點', '請把臉往左移，回到橢圓框中央'),
   'face.up': P('adjust', 'up', '臉偏上了，請把手機抬高一點', '請把手機往上移，讓臉回到框中央'),
   'face.down': P('adjust', 'down', '臉偏下了，請把手機放低一點', '請把手機往下移，讓臉回到框中央'),
-  'face.far': P('adjust', 'closer', '靠近一點', '請把手機拿近一點，讓臉填滿橢圓框', '臉太小了，手機再靠近一些'),
-  'face.near': P('adjust', 'farther', '退後一點', '太近了，請把手機拿遠一點', '臉超出框了，請把手臂伸直一點'),
+  'face.far': P('adjust', 'closer', '請把手機拿近一點，讓臉填滿橢圓框', '靠近一點', '臉太小了，手機再靠近一些'),
+  'face.near': P('adjust', 'farther', '太近了，請把手機拿遠一點', '退後一點', '臉超出框了，請把手臂伸直一點'),
   'face.turnLeft': P('adjust', 'left', '請正面看鏡頭，頭往左轉一點', '鼻子對準鏡頭，臉稍微往左轉'),
   'face.turnRight': P('adjust', 'right', '請正面看鏡頭，頭往右轉一點', '鼻子對準鏡頭，臉稍微往右轉'),
   'face.front': P('adjust', 'frame', '請正面看鏡頭', '眼睛直視鏡頭，臉不要側轉'),
@@ -54,21 +56,34 @@ export const PHRASES = {
   'face.capture': P('good', 'ok', '正在拍攝…'),
 };
 
-const ROTATE_MS = 3500;
+// Short fragments used when several adjustments are needed at once -> ONE merged sentence.
+export const PARTS = {
+  // card (directions are for moving the phone)
+  'card.near': ['把手機拿遠一點', 'farther'], 'card.small': ['把手機靠近一點', 'closer'],
+  'card.left': ['手機往左移一點', 'left'], 'card.right': ['手機往右移一點', 'right'],
+  'card.up': ['手機往上移一點', 'up'], 'card.down': ['手機往下移一點', 'down'],
+  'card.flat': ['手機與證件保持平行', 'flat'], 'card.rotate': ['把證件轉正', 'rotate'],
+  // face (as seen on the mirrored preview)
+  'face.left': ['把臉往右移', 'right'], 'face.right': ['把臉往左移', 'left'],
+  'face.up': ['手機抬高一點', 'up'], 'face.down': ['手機放低一點', 'down'],
+  'face.far': ['靠近一點', 'closer'], 'face.near': ['退後一點', 'farther'],
+  'face.turnLeft': ['頭往左轉一點', 'left'], 'face.turnRight': ['頭往右轉一點', 'right'],
+  'face.front': ['正面看鏡頭', 'frame'], 'face.chinDown': ['稍微低頭', 'down'], 'face.chinUp': ['稍微抬頭', 'up'],
+  'face.roll': ['把頭擺正', 'rotate'],
+};
 
-/** Per-step phrase picker: stable while the key is unchanged, rotates every ROTATE_MS. */
-export class Phraser {
-  constructor() { this.key = null; this.idx = 0; this.since = 0; this.last = {}; }
-  say(key, ts) {
-    const p = PHRASES[key] || { level: 'adjust', dir: '', texts: [key] };
-    const n = p.texts.length;
-    if (key !== this.key) {
-      this.idx = this.last[key] === undefined ? 0 : (this.last[key] + 1) % n;
-      this.key = key; this.since = ts;
-    } else if (n > 1 && ts - this.since > ROTATE_MS) {
-      this.idx = (this.idx + 1) % n; this.since = ts;
-    }
-    this.last[key] = this.idx;
-    return { key, hint: p.texts[this.idx % n], level: p.level, dir: p.dir };
+/** One key -> its full sentence; several keys (already in priority order) -> one merged sentence (max 2 parts). */
+export function phrase(keys) {
+  keys = [].concat(keys).filter(Boolean);
+  if (keys.length <= 1) {
+    const k = keys[0], p = PHRASES[k] || { level: 'adjust', dir: '', texts: [k] };
+    return { key: k, hint: p.texts[0], level: p.level, dir: p.dir };
   }
+  const [a, b] = keys.slice(0, 2).map(k => PARTS[k] || [(PHRASES[k] || { texts: [k] }).texts[0], '']);
+  return { key: keys.slice(0, 2).join('+'), hint: `請${a[0]}，並${b[0]}`, level: 'adjust', dir: a[1] };
+}
+
+/** Kept for API compatibility: one stable phrase per state (no rotation). */
+export class Phraser {
+  say(keys) { return phrase(keys); }
 }

@@ -2,8 +2,8 @@
 // Finds the four straight borders of a card-shaped object around the on-screen guide
 // using Sobel edge projection profiles, then checks fill, alignment, aspect ratio,
 // glare, darkness and sharpness. Works on a downscaled RGBA ImageData.
-import { toGray, laplacianVariance, lumaStats, meanAbsDiff } from './imageops.js?v=2026-11-11c2';
-import { Phraser } from './hints.js?v=2026-11-11c2';
+import { toGray, laplacianVariance, lumaStats, meanAbsDiff } from './imageops.js?v=2026-11-11d';
+import { phrase } from './hints.js?v=2026-11-11d';
 
 export const CARD_ASPECT = 85.6 / 53.98; // ISO/IEC 7810 ID-1 (Taiwan ID card, driver licence, health card)
 
@@ -26,12 +26,28 @@ export const CARD_DEFAULTS = {
   steadyWindow: 5,      // frames averaged for the steadiness reference (~0.35 s)
   graceMs: 300,         // a brief glitch (one bad frame) does not restart the hold timer
   mode: 'front',        // 'front' | 'rightSide' (forgery: card shot obliquely from the upper right)
+  wantThumb: false,     // compute a small grey thumbnail of the card (to tell front from back)
+  refThumb: null,       // thumbnail of the already-captured side; a match means "not flipped yet"
+  sameTol: 18,          // mean abs grey difference below which two thumbnails are the same side
 };
+
+const TW = 32, TH = 20;
+export function cardThumb(gray, w, r) {
+  const out = new Float32Array(TW * TH);
+  let mean = 0;
+  for (let j = 0; j < TH; j++) for (let i = 0; i < TW; i++) {
+    const x = Math.round(r.x + (i + 0.5) / TW * r.w), y = Math.round(r.y + (j + 0.5) / TH * r.h);
+    const v = gray[y * w + x] || 0; out[j * TW + i] = v; mean += v;
+  }
+  mean /= out.length; for (let k = 0; k < out.length; k++) out[k] -= mean; // brightness-invariant
+  return out;
+}
+export function thumbDiff(a, b) { let s = 0; for (let k = 0; k < a.length; k++) s += Math.abs(a[k] - b[k]); return s / a.length; }
 
 // Oblique shot used by idcard/forgery (direction "rightSide").
 export const CARD_RIGHTSIDE = {
   mode: 'rightSide', minFill: 0.55, maxFill: 1.15, maxCenterOffset: 0.16, aspectMin: 0.95, aspectMax: 2.7,
-  maxTiltDeg: 45, minSkewDeg: 3, minSkewAspect: 0.12, steadyMs: 400,
+  maxTiltDeg: 45, minSkewDeg: 9, minSkewAspect: 0.12, minObliqueDiff: 22, steadyMs: 400,
 };
 
 function sobel(gray, w, h) {
@@ -125,7 +141,7 @@ export class CardDetector {
   }
   reset() {
     this.prevRect = null; this.prevGray = null; this.steadySince = 0; this.lastTs = 0;
-    this.hist = []; this.diffs = []; this.lastGood = 0; this.ph = new Phraser();
+    this.hist = []; this.diffs = []; this.lastGood = 0;
   }
   /**
    * @param {ImageData} img analysis frame
@@ -157,13 +173,13 @@ export class CardDetector {
     const diff = [...this.diffs].sort((a, b) => a - b)[this.diffs.length >> 1];
     metrics.diff = +diff.toFixed(1);
     const rs = o.mode === 'rightSide';
-    const K = (k) => (rs && ['card.search', 'card.partial', 'card.near', 'card.small', 'card.flat'].includes(k) ? k.replace('card.', 'card.rs.').replace('rs.partial', 'rs.search') : k);
-    const say = (k) => this.ph.say(K(k), ts);
+    const RS = { 'card.search': 'card.rs.search', 'card.partial': 'card.rs.search', 'card.near': 'card.rs.near', 'card.small': 'card.rs.small', 'card.flat': 'card.rs.flat' };
+    const say = (keys) => { keys = [].concat(keys); if (rs && keys.length > 1) keys = keys.filter(k => k !== 'card.flat'); if (rs && keys.length === 1 && RS[keys[0]]) keys = [RS[keys[0]]]; return phrase(keys); };
 
-    const fail = (state, key, rect) => {
+    const fail = (state, keys, rect) => {
       if (ts - this.lastGood > o.graceMs) { this.steadySince = 0; this.hist = []; }
       this.prevRect = rect || null;
-      return { state, ...say(key), ready: false, rect, metrics, progress: 0 };
+      return { state, ...say(keys), ready: false, rect, metrics, progress: 0 };
     };
 
     // overall darkness (whole guide area)
@@ -186,32 +202,51 @@ export class CardDetector {
       if (sides.some(s => s && s.ok && s.atLimit) || fill > o.maxFill) return fail('near', 'card.near', rect);
       return fail('search', 'card.partial', rect);
     }
-    if (fill > o.maxFill || sides.some(s => s && s.atLimit && s.strength > o.minEdge)) return fail('near', 'card.near', rect);
-    if (fill < o.minFill) return fail('small', 'card.small', rect);
-    if (aspect < o.aspectMin || aspect > o.aspectMax) return fail('tilt', 'card.flat', rect);
-    if (Math.abs(offX) > o.maxCenterOffset || Math.abs(offY) > o.maxCenterOffset) {
-      // card right of centre in the (unmirrored) rear preview -> move the phone right, etc.
-      if (Math.abs(offX) >= Math.abs(offY)) return fail('offset', offX > 0 ? 'card.right' : 'card.left', rect);
-      return fail('offset', offY > 0 ? 'card.down' : 'card.up', rect);
-    }
     const inset = 0.06;
     const ix0 = rect.x + rect.w * inset, iy0 = rect.y + rect.h * inset, ix1 = rect.x2 - rect.w * inset, iy1 = rect.y2 - rect.h * inset;
+    const sharp = laplacianVariance(gray, w, h, ix0, iy0, ix1, iy1);
+    metrics.sharp = +sharp.toFixed(0);
+    // tilt: slope of the borders (only meaningful on a sharp frame; blur gives false slopes)
+    let tilt = 0;
+    if (sharp >= o.minSharpness) {
+      const sl = (side, horiz) => side && side.ok ? Math.abs(horiz
+        ? borderSlopeDeg(gy, w, h, true, side, L + 0.05 * gw, R - 0.05 * gw, (rs ? 0.2 : 0.10) * gh)
+        : borderSlopeDeg(gx, w, h, false, side, T + 0.08 * gh, B - 0.08 * gh, (rs ? 0.2 : 0.10) * gh)) : 0;
+      tilt = Math.max(sl(top, true), sl(bot, true), sl(lef, false), sl(rig, false));
+      metrics.tilt = +tilt.toFixed(1);
+    }
+    // Geometry problems are collected and merged into ONE hint (priority: distance, rotation, position, flatness).
+    const parts = [];
+    if (fill > o.maxFill || sides.some(s => s && s.atLimit && s.strength > o.minEdge)) parts.push('card.near');
+    else if (fill < o.minFill) parts.push('card.small');
+    if (!rs && tilt > o.maxTiltDeg) parts.push('card.rotate');
+    if (Math.abs(offX) > o.maxCenterOffset || Math.abs(offY) > o.maxCenterOffset) {
+      // card right of centre in the (unmirrored) rear preview -> move the phone right, etc.
+      parts.push(Math.abs(offX) >= Math.abs(offY) ? (offX > 0 ? 'card.right' : 'card.left') : (offY > 0 ? 'card.down' : 'card.up'));
+    }
+    if (aspect < o.aspectMin || aspect > o.aspectMax) parts.push('card.flat');
+    if (parts.length) return fail(parts[0].slice(5), parts, rect);
     const st = lumaStats(gray, w, h, ix0, iy0, ix1, iy1);
     metrics.glare = +st.whiteFrac.toFixed(3);
     if (st.whiteFrac > o.maxGlare) return fail('glare', 'card.glare', rect);
-    const sharp = laplacianVariance(gray, w, h, ix0, iy0, ix1, iy1);
-    metrics.sharp = +sharp.toFixed(0);
     if (sharp < o.minSharpness) return fail('blur', 'card.blur', rect);
-    // tilt: slope of the top/bottom and left/right borders
-    const sl = (side, horiz) => side && side.ok ? Math.abs(horiz
-      ? borderSlopeDeg(gy, w, h, true, side, L + 0.05 * gw, R - 0.05 * gw, (rs ? 0.2 : 0.10) * gh)
-      : borderSlopeDeg(gx, w, h, false, side, T + 0.08 * gh, B - 0.08 * gh, (rs ? 0.2 : 0.10) * gh)) : 0;
-    const tilt = Math.max(sl(top, true), sl(bot, true), sl(lef, false), sl(rig, false));
-    metrics.tilt = +tilt.toFixed(1);
     if (rs) {
-      // must really be oblique: slanted borders or a clearly non-ID-1 apparent aspect
-      if (tilt < o.minSkewDeg && Math.abs(aspect - CARD_ASPECT) < o.minSkewAspect) return fail('tilt', 'card.flat', rect);
-    } else if (tilt > o.maxTiltDeg) return fail('tilt', 'card.rotate', rect);
+      // must really be oblique. Signals: clearly non-ID-1 apparent aspect, strongly slanted borders, or (when the flat
+      // shot of this side is known) a card image that differs enough from the flat one (perspective distortion).
+      let oblique = Math.abs(aspect - CARD_ASPECT) >= o.minSkewAspect || tilt >= o.minSkewDeg;
+      if (o.refThumb) {
+        metrics.same = +thumbDiff(cardThumb(gray, w, rect), o.refThumb).toFixed(1);
+        oblique = oblique || metrics.same >= o.minObliqueDiff;
+      }
+      if (!oblique) return fail('tilt', 'card.flat', rect);
+    }
+    // two-sided ID: refuse the side that was already captured (user has not flipped yet)
+    if (!rs && (o.refThumb || o.wantThumb)) {
+      const th = cardThumb(gray, w, rect);
+      metrics.same = o.refThumb ? +thumbDiff(th, o.refThumb).toFixed(1) : undefined;
+      if (o.refThumb && metrics.same < o.sameTol) return fail('flip', 'card.flipSame', rect);
+      this.thumb = th;
+    }
 
     // steadiness: compare with the average of the last few accepted rects (smooths detector jitter)
     this.lastGood = ts;
@@ -232,7 +267,7 @@ export class CardDetector {
     if (!this.steadySince) this.steadySince = ts;
     const held = ts - this.steadySince;
     const progress = Math.min(1, held / o.steadyMs);
-    if (held >= o.steadyMs) return { state: 'capture', ...say('card.capture'), ready: true, rect, metrics, progress: 1 };
+    if (held >= o.steadyMs) return { state: 'capture', ...say('card.capture'), ready: true, rect, metrics, progress: 1, thumb: this.thumb };
     return { state: 'hold', ...say('card.hold'), ready: false, rect, metrics, progress };
   }
 }

@@ -1,8 +1,9 @@
-import { APP_VERSION } from './version.js?v=2026-11-11c2';
-import { Camera } from './camera.js?v=2026-11-11c2';
-import { createEngine } from './engines/index.js?v=2026-11-11c2';
-import { CARD_ASPECT, CARD_RIGHTSIDE } from './card-detector.js?v=2026-11-11c2';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement } from './upload.js?v=2026-11-11c2';
+import { APP_VERSION } from './version.js?v=2026-11-11d';
+import { Camera } from './camera.js?v=2026-11-11d';
+import { createEngine } from './engines/index.js?v=2026-11-11d';
+import { CARD_ASPECT, CARD_RIGHTSIDE } from './card-detector.js?v=2026-11-11d';
+import { phrase } from './hints.js?v=2026-11-11d';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL } from './upload.js?v=2026-11-11d';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -12,10 +13,10 @@ const MANUAL_AFTER_MS = Number(params.get('manualAfter') || 12000);
 const els = {
   stage: $('stage'), video: $('video'), hint: $('hint'), progress: $('progress'), shade: $('shade'), guide: $('guide'),
   detected: $('detected'), overlay: $('overlay'), flash: $('flash'), metrics: $('metrics'), stageTitle: $('stage-title'),
-  manual: $('btn-manual'), banner: $('banner'), hintIcon: $('hint-icon'), shotCount: $('shot-count'), shotGuide: $('shot-guide'),
+  manual: $('btn-manual'), banner: $('banner'), hintIcon: $('hint-icon'), demo: $('demo'), demoText: $('demo-text'), ring: $('ring'),
 };
 const ICONS = { left: '←', right: '→', up: '↑', down: '↓', closer: '＋', farther: '－', rotate: '↻', flat: '▭', tiltright: '↗', frame: '⛶',
-  still: '✋', ok: '✓', glare: '☀', light: '💡', blur: '◎', block: '!', person: '!', eye: '👁', wait: '…' };
+  still: '✋', ok: '✓', glare: '☀', light: '💡', blur: '◎', block: '!', person: '!', eye: '👁', wait: '…', flip: '⇋' };
 const STATE_LEVEL = { hold: 'good', capture: 'good', sdk: 'adjust', loading: 'adjust' };
 const camera = new Camera(els.video, els.stage);
 let cfg = loadConfig();
@@ -24,8 +25,8 @@ const engine = createEngine(ENGINE_KIND, { sdkUrl: params.get('sdk') || '', resP
 
 // In-memory only. Object URLs are revoked whenever an image is replaced or reset.
 // card = { image, frames[], type }   face = { image, frames[], stillIndex | (detail, still), cameraInfo }
-const shots = { card: null, face: null, cardUrl: null, faceUrl: null, forgeryUrls: [] };
-const state = { step: 'intro', retakeOnly: false, guide: null, kind: null, lastHint: '', lastHintAt: 0, manualTimer: 0 };
+const shots = { card: null, face: null, cardUrl: null, faceUrl: null, backUrl: null, forgeryUrls: [] };
+const state = { step: 'intro', phase: '', retakeOnly: false, guide: null, kind: null, manualTimer: 0, disp: { key: null, since: 0, level: '' }, pend: { key: null, since: 0 } };
 const forceRef = { now: false };
 window.__ekyc = { state, shots, version: APP_VERSION, events: [] };
 const log = (e) => { window.__ekyc.events.push({ t: Math.round(performance.now()), ...e }); };
@@ -33,7 +34,7 @@ const log = (e) => { window.__ekyc.events.push({ t: Math.round(performance.now()
 $('ver').textContent = APP_VERSION;
 const typeSel = $('card-type');
 for (const [v, label] of CARD_TYPES) { const o = document.createElement('option'); o.value = v; o.textContent = label; typeSel.appendChild(o); }
-typeSel.value = cfg.cardType || 'TW_ID_CARD_FRONT';
+typeSel.value = normalizeCardChoice(cfg.cardType);
 typeSel.addEventListener('change', () => { cfg.cardType = typeSel.value; saveConfig(cfg); });
 const typeLabel = () => (CARD_TYPES.find(t => t[0] === typeSel.value) || [, '證件'])[1];
 $('engine-label').textContent = '目前：' + engine.label;
@@ -66,12 +67,18 @@ function layoutGuide(kind) {
   const cw = els.stage.clientWidth, ch = els.stage.clientHeight;
   els.overlay.setAttribute('viewBox', `0 0 ${cw} ${ch}`);
   let g, path;
-  if (kind === 'card') {
+  if (kind === 'card' || kind === 'tilt') {
     const w = Math.min(cw * 0.88, 560, (ch * 0.6) * CARD_ASPECT), h = w / CARD_ASPECT;
     g = { x: (cw - w) / 2, y: ch * 0.44 - h / 2, w, h };
     const r = Math.min(18, w * 0.04);
-    path = roundRectPath(g.x, g.y, g.w, g.h, r);
+    if (kind === 'tilt') {
+      // card seen from the upper right: near (right) edge taller, far (left) edge shorter
+      const s = h * 0.16;
+      path = `M ${g.x + w * 0.06} ${g.y + s} L ${g.x + w} ${g.y - h * 0.02} L ${g.x + w * 0.98} ${g.y + h * 1.04} L ${g.x + w * 0.04} ${g.y + h - s * 0.6} Z`;
+    } else path = roundRectPath(g.x, g.y, g.w, g.h, r);
+    els.guide.classList.toggle('tilted', kind === 'tilt');
   } else {
+    els.guide.classList.remove('tilted');
     const w = Math.min(cw * 0.68, ch * 0.5), h = w * 1.32;
     g = { x: (cw - w) / 2, y: ch * 0.43 - h / 2, w, h };
     const rx = w / 2, ry = h / 2, cx = g.x + rx, cy = g.y + ry;
@@ -88,36 +95,53 @@ function roundRectPath(x, y, w, h, r) {
 window.addEventListener('resize', () => { if (state.kind) layoutGuide(state.kind); });
 
 // ---------- live UI ----------
-const GOOD = new Set(['hold', 'capture', 'steady', 'moving', 'loading', 'sdk']);
+// One stable hint: a new hint must persist (debounce) and the current one stays at least MIN_SHOW ms,
+// except that "good" states (hold / capturing) appear quickly so the user is not told to move while it shoots.
+const MIN_SHOW = 1500, DEBOUNCE = 450, GOOD_DEBOUNCE = 150, LEAVE_GOOD_SHOW = 700;
+const CALM = new Set(['hold', 'capture', 'steady', 'moving', 'loading', 'sdk', 'search', 'noface', 'flip']);
+function showHint(out) {
+  const level = out.level || STATE_LEVEL[out.state] || 'adjust';
+  const key = out.key || out.hint;
+  if (key !== state.disp.key) {
+    log({ hint: out.hint, state: out.state, level, dir: out.dir });
+    els.banner.classList.remove('pop'); void els.banner.offsetWidth; els.banner.classList.add('pop');
+  }
+  state.disp = { key, since: performance.now(), level };
+  els.hint.textContent = out.hint;
+  els.stage.dataset.state = out.state; els.stage.dataset.level = level; els.stage.dataset.dir = out.dir || '';
+  els.hintIcon.textContent = ICONS[out.dir] || '';
+  els.stage.classList.toggle('warn', !CALM.has(out.state));
+}
 const ui = {
-  update(out, rectDisplay) {
+  /** force = show immediately (phase changes) */
+  update(out, rectDisplay, _raw, force) {
     const now = performance.now();
-    // avoid flicker: a new warning must persist 250 ms unless it is a "good" state
-    if (out.hint !== state.lastHint) {
-      if (GOOD.has(out.state) || now - state.lastHintAt > 250 || !state.lastHint) {
-        if (out.hint !== els.hint.textContent) {
-          log({ hint: out.hint, state: out.state, level: out.level, dir: out.dir });
-          els.banner.classList.remove('pop'); void els.banner.offsetWidth; els.banner.classList.add('pop');
-        }
-        els.hint.textContent = out.hint; state.lastHint = out.hint; state.lastHintAt = now;
-        els.stage.dataset.state = out.state;
-        els.stage.dataset.level = out.level || STATE_LEVEL[out.state] || 'adjust';
-        els.stage.dataset.dir = out.dir || '';
-        els.hintIcon.textContent = ICONS[out.dir] || '';
-        els.stage.classList.toggle('warn', !GOOD.has(out.state) && out.state !== 'search' && out.state !== 'noface');
-      }
-    } else state.lastHintAt = now;
-    els.progress.classList.toggle('on', out.progress > 0);
-    els.progress.firstElementChild.style.width = Math.round((out.progress || 0) * 100) + '%';
+    const level = out.level || STATE_LEVEL[out.state] || 'adjust';
+    const key = out.key || out.hint;
+    if (force || !state.disp.key || out.state === 'capture') { if (key !== state.disp.key || force) showHint(out); }
+    else if (key === state.disp.key) { state.pend = { key: null, since: 0 }; }
+    else {
+      if (state.pend.key !== key) state.pend = { key, since: now };
+      const good = level === 'good';
+      const minShow = good ? 0 : (state.disp.level === 'good' ? LEAVE_GOOD_SHOW : MIN_SHOW);
+      if (now - state.pend.since >= (good ? GOOD_DEBOUNCE : DEBOUNCE) && now - state.disp.since >= minShow) showHint(out);
+    }
+    const showProg = state.disp.level === 'good' && out.progress > 0;
+    els.progress.classList.toggle('on', showProg && state.kind !== 'tilt');
+    els.progress.firstElementChild.style.width = Math.round((showProg ? out.progress : 0) * 100) + '%';
+    if (state.kind === 'tilt' && !els.ring.hidden) els.ring.style.setProperty('--p', Math.round((out.progress || 0) * 100));
     if (rectDisplay) {
       els.detected.setAttribute('x', rectDisplay.x); els.detected.setAttribute('y', rectDisplay.y);
       els.detected.setAttribute('width', Math.max(0, rectDisplay.w)); els.detected.setAttribute('height', Math.max(0, rectDisplay.h));
-      els.detected.classList.add('on');
+      els.detected.classList.toggle('on', state.kind !== 'tilt');
     } else els.detected.classList.remove('on');
     if (DEBUG) els.metrics.textContent = out.state + ' ' + JSON.stringify(out.metrics || {});
-    window.__ekyc.last = { state: out.state, hint: out.hint, level: els.stage.dataset.level, dir: out.dir, metrics: out.metrics };
+    window.__ekyc.last = { state: out.state, hint: els.hint.textContent, raw: out.hint, level: els.stage.dataset.level, dir: els.stage.dataset.dir, metrics: out.metrics };
   },
 };
+function demo(kind, text) {
+  els.demo.hidden = !kind; els.demo.className = 'demo ' + (kind || ''); els.demoText.textContent = text || '';
+}
 
 function flash() {
   els.flash.classList.remove('go'); void els.flash.offsetWidth; els.flash.classList.add('go');
@@ -132,90 +156,122 @@ function cameraErrorText(e) {
   return '無法開啟相機：' + (e && e.message ? e.message : e);
 }
 
-async function runCapture(kind) {
-  setStep(kind);
+function resetStageUi(title) {
+  forceRef.now = false; els.manual.hidden = true; clearTimeout(state.manualTimer);
+  state.disp = { key: null, since: 0, level: '' }; state.pend = { key: null, since: 0 };
+  demo(null); els.ring.hidden = true;
+  if (title) els.stageTitle.textContent = title;
+}
+function armManual() { clearTimeout(state.manualTimer); state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS); }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function openStage(kind, title) {
+  setStep(kind === 'face' ? 'face' : 'card');
   show('capture');
-  forceRef.now = false;
-  els.manual.hidden = true;
-  clearTimeout(state.manualTimer);
-  state.lastHint = '';
-  els.hint.textContent = '準備相機中…'; els.hintIcon.textContent = ICONS.wait;
-  els.stage.dataset.state = 'loading'; els.stage.dataset.level = 'adjust'; els.stage.dataset.dir = 'wait';
-  els.shotCount.hidden = true; els.shotGuide.hidden = true;
-  els.stageTitle.textContent = kind === 'card' ? `步驟 1／3：拍攝${typeLabel()}（後鏡頭）` : '步驟 2／3：拍攝人臉（自拍鏡頭）';
+  resetStageUi(title);
+  ui.update({ state: 'loading', hint: '準備相機中…', level: 'adjust', dir: 'wait' }, null, null, true);
   layoutGuide(kind);
-  await camera.open(kind === 'card' ? 'environment' : 'user');
+  await camera.open(kind === 'face' ? 'user' : 'environment');
   layoutGuide(kind);
   log({ camera: camera.facing, w: els.video.videoWidth, h: els.video.videoHeight });
-  state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS);
-  const ctx = { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef, cardType: typeSel.value };
-  const raw = kind === 'card' ? await engine.captureIdCard(ctx) : await engine.captureFace(ctx);
+  return { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef };
+}
+
+/** One side of a document (front or back), incl. silent forgery frames and the tilted shots. */
+async function captureSide(ctx, type, opts) {
+  const forgery = forgeryApplies(cfg, type);
+  const req = forgery ? await getForgeryRequirement(cfg, type) : null;
+  if (req) log({ forgeryRequirement: req, side: type });
+  state.phase = opts.back ? 'back' : 'front';
+  layoutGuide('card');
+  armManual();
+  const raw = await engine.captureIdCard({ ...ctx, cardType: type, collectFront: req ? req.front : 0,
+    cardOptions: opts.refThumb ? { refThumb: opts.refThumb } : undefined });
   clearTimeout(state.manualTimer);
   flash();
-  // engines may return a bare Blob (e.g. FaceMe SDK adapter) or { image, frames, ... }
-  const shot = raw instanceof Blob ? { image: raw, frames: [raw], stillIndex: 0 } : raw;
-  if (kind === 'card') {
-    shot.type = typeSel.value;
-    if (forgeryApplies(cfg, shot.type)) shot.forgery = await runForgery(ctx);
+  const shot = raw instanceof Blob ? { image: raw, frames: [raw] } : raw;
+  shot.type = type;
+  log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now });
+  if (req) {
+    const fr = (shot.front && shot.front.length ? shot.front : shot.frames).slice(0, req.front);
+    for (let i = 0; fr.length < req.front && i < 50; i++) fr.push(shot.frames[i % shot.frames.length]);
+    // rightSide: tilted guide frame + short animation; captured silently once the tilt is detected
+    state.phase = opts.back ? 'tiltBack' : 'tilt';
+    await sleep(350);
+    resetStageUi();
+    layoutGuide('tilt');
+    demo('tilt', '手機移到證件右上方，斜斜往下拍');
+    ui.update({ state: 'search', ...phrase('card.rs.search') }, null, null, true);
+    els.ring.hidden = false; els.ring.style.setProperty('--p', 0);
+    armManual();
+    const r = await engine.captureCardShot({ ...ctx, cardType: type, cardOptions: { ...CARD_RIGHTSIDE, refThumb: shot.thumb || null }, keep: req.rightSide, minFrames: req.rightSide, grabFull: req.full > 0 });
+    clearTimeout(state.manualTimer);
+    els.ring.style.setProperty('--p', 100);
+    flash();
+    const rs = r instanceof Blob ? [r] : (r.frames || [r.image]);
+    const rsList = rs.slice(0, req.rightSide);
+    while (rsList.length < req.rightSide) rsList.push(rs[0]);
+    shot.forgery = { shots: fr.map(b => ({ blob: b, direction: 'front' })).concat(rsList.map(b => ({ blob: b, direction: 'rightSide' }))),
+      full: r.full ? [r.full] : [], counts: req };
+    log({ forgery: type, front: fr.length, rightSide: rsList.length });
+    await sleep(300);
+    demo(null); els.ring.hidden = true; layoutGuide('card');
   }
-  if (kind === 'face' && !shot.cameraInfo) shot.cameraInfo = camera.info();
-  log({ captured: kind, bytes: shot.image.size, frames: shot.frames.length, still: kind === 'face' ? stillValue(shot, cfg) : undefined, manual: forceRef.now });
-  setShot(kind, shot);
-  await new Promise(r => setTimeout(r, 350));
   return shot;
 }
 
-// Forgery shots: N 'front' (from directly above) + M 'rightSide' (from the upper right, tilted), counts from the
-// Forgery Requirements API when available. Uses the same open rear camera.
-async function runForgery(baseCtx) {
-  const type = typeSel.value;
-  els.hint.textContent = '準備證件防偽拍攝…'; state.lastHint = '';
-  const req = await getForgeryRequirement(cfg, type);
-  log({ forgeryRequirement: req });
-  const plan = [];
-  for (let i = 0; i < req.front; i++) plan.push({ direction: 'front', i: i + 1, n: req.front, full: i < req.full });
-  for (let i = 0; i < req.rightSide; i++) plan.push({ direction: 'rightSide', i: i + 1, n: req.rightSide, full: false });
-  const out = { shots: [], full: [], counts: req };
-  for (const p of plan) {
-    const front = p.direction === 'front';
-    els.stageTitle.textContent = `證件防偽：${front ? '正面' : '右上斜拍'} 第 ${p.i}/${p.n} 張`;
-    els.shotCount.textContent = `${front ? '正面' : '右上斜拍'} 第 ${p.i}/${p.n} 張`;
-    els.shotCount.hidden = false;
-    els.shotGuide.innerHTML = front
-      ? '手機與證件平行、從<b>正上方</b>拍。每拍一張後會提示下一張。'
-      : '把手機移到證件<b>右上方</b>，鏡頭斜斜朝左下（約 20–30 度），證件仍要整張在框內。';
-    els.shotGuide.hidden = false;
-    state.lastHint = '';
-    ui.update({ state: 'search', hint: front ? `正面第 ${p.i} 張：請從正上方對準證件` : `右上斜拍第 ${p.i} 張：手機移到證件右上方斜拍`, level: 'adjust', dir: front ? 'frame' : 'tiltright', progress: 0 });
-    await new Promise(r => setTimeout(r, p.i === 1 ? 900 : 450)); // let the user read / move between shots
-    forceRef.now = false; els.manual.hidden = true; clearTimeout(state.manualTimer);
-    state.manualTimer = setTimeout(() => { els.manual.hidden = false; }, MANUAL_AFTER_MS);
-    const opts = front ? { steadyMs: 350 } : CARD_RIGHTSIDE;
-    const r = await engine.captureCardShot({ ...baseCtx, cardOptions: opts, keep: 1, grabFull: p.full });
-    clearTimeout(state.manualTimer);
-    flash();
-    out.shots.push({ blob: r.image, direction: p.direction });
-    if (r.full) out.full.push(r.full);
-    log({ forgeryShot: p.direction, i: p.i, n: p.n, bytes: r.image.size, manual: forceRef.now });
+async function runCard() {
+  const sides = sidesOf(typeSel.value);
+  const ctx = await openStage('card', `步驟 1／3：拍攝${typeLabel()}（後鏡頭）`);
+  const front = await captureSide(ctx, sides[0], {});
+  if (sides[1]) {
+    // flip guide, then the back side (the detector refuses the front until it has really been flipped)
+    state.phase = 'flip';
+    resetStageUi('步驟 1／3：拍攝身分證背面（後鏡頭）');
+    demo('flip', '把身分證翻到背面');
+    ui.update({ state: 'flip', ...phrase('card.flip') }, null, null, true);
+    await sleep(1800);
+    front.back = await captureSide(ctx, sides[1], { back: true, refThumb: front.thumb });
+    demo(null);
   }
-  els.shotCount.hidden = true; els.shotGuide.hidden = true;
-  return out;
+  setShot('card', front);
+  await sleep(300);
+  return front;
+}
+
+async function runFace() {
+  const ctx = await openStage('face', '步驟 2／3：拍攝人臉（自拍鏡頭）');
+  state.phase = 'face';
+  armManual();
+  const raw = await engine.captureFace(ctx);
+  clearTimeout(state.manualTimer);
+  flash();
+  const shot = raw instanceof Blob ? { image: raw, frames: [raw], stillIndex: 0 } : raw;
+  if (!shot.cameraInfo) shot.cameraInfo = camera.info();
+  log({ captured: 'face', bytes: shot.image.size, frames: shot.frames.length, still: stillValue(shot, cfg), manual: forceRef.now });
+  setShot('face', shot);
+  await sleep(350);
+  return shot;
 }
 
 function setShot(kind, shot) {
   const key = kind + 'Url';
   if (shots[key]) URL.revokeObjectURL(shots[key]);
-  if (kind === 'card') { shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = []; }
+  if (kind === 'card') {
+    shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = [];
+    if (shots.backUrl) URL.revokeObjectURL(shots.backUrl);
+    shots.backUrl = shot.back ? URL.createObjectURL(shot.back.image) : null;
+  }
   shots[kind] = shot; shots[key] = URL.createObjectURL(shot.image);
 }
 
 async function flow(from) {
   try {
     if (from === 'card') {
-      await runCapture('card');
-      if (!(state.retakeOnly && shots.face)) await runCapture('face');
+      await runCard();
+      if (!(state.retakeOnly && shots.face)) await runFace();
     } else if (from === 'face') {
-      await runCapture('face');
+      await runFace();
     }
     camera.stop();
     showReview();
@@ -235,35 +291,71 @@ function showReview() {
   setStep('review');
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
-  $('card-meta').textContent = `${typeLabel()}・保留 ${shots.card.frames.length} 張供 OCR（顯示最清晰的一張）` + (shots.card.frames.length < 3 ? '。手動拍照只有 1 張，OCR 可能要求補拍，建議重拍讓系統自動拍。' : '');
+  const c = shots.card;
+  $('card-meta').textContent = `${typeLabel()}${c.back ? '・正面' : ''}` + (c.frames.length < 3 ? '・手動拍照只有 1 張，讀取資料可能要求補拍，建議重拍讓系統自動拍。' : '');
+  $('back-fig').hidden = !c.back;
+  if (c.back) { $('img-back').src = shots.backUrl; $('back-meta').textContent = '身分證背面'; }
+  resetMatch();
   renderForgery();
-  $('face-meta').textContent = `活體序列 ${shots.face.frames.length} 張` + (shots.face.detail ? '・活體資料由 FaceMe SDK 產生' : `・靜止幀為第 ${(shots.face.stillIndex ?? 0) + 1} 張`);
+  $('face-meta').textContent = shots.face.detail ? '真人檢查資料由 FaceMe 元件產生' : `自拍（含 ${shots.face.frames.length} 張連拍供真人檢查）`;
   $('upload-result').hidden = true;
   $('btn-upload').disabled = false;
   renderMode();
 }
 
 function renderForgery() {
-  const fig = $('forgery-fig'), strip = $('forgery-strip'), f = shots.card && shots.card.forgery;
-  fig.hidden = !f; strip.innerHTML = '';
-  if (!f) return;
+  const fig = $('forgery-fig'), strip = $('forgery-strip');
+  const sides = [shots.card, shots.card && shots.card.back].filter(c => c && c.forgery);
+  fig.hidden = !sides.length; strip.innerHTML = '';
+  if (!sides.length) return;
   shots.forgeryUrls.forEach(u => URL.revokeObjectURL(u)); shots.forgeryUrls = [];
-  const cnt = { front: 0, rightSide: 0 };
-  for (const s of f.shots) {
-    cnt[s.direction]++;
+  let n = 0;
+  for (const c of sides) for (const s of c.forgery.shots) {
+    n++;
     const u = URL.createObjectURL(s.blob); shots.forgeryUrls.push(u);
     const fg = document.createElement('figure');
-    fg.innerHTML = `<img alt=""><figcaption>${s.direction === 'front' ? '正面' : '右上'} ${cnt[s.direction]}</figcaption>`;
+    fg.innerHTML = `<img alt=""><figcaption>${SIDE_LABEL[c.type] || ''}${s.direction === 'front' ? '・正拍' : '・斜拍'}</figcaption>`;
     fg.querySelector('img').src = u; strip.appendChild(fg);
   }
-  $('forgery-meta').textContent = `正面 ${cnt.front} 張＋右上斜拍 ${cnt.rightSide} 張` + (f.full.length ? `＋全幅 ${f.full.length} 張` : '') +
-    `（張數來源：${f.counts.source === 'api' ? 'Forgery Requirements API' : '預設 5＋2'}）・上傳時呼叫 idcard/forgery`;
+  $('forgery-count').textContent = n;
+  $('forgery-meta').textContent = '上傳時用於證件真偽辨識。' + sides.map(c => `${SIDE_LABEL[c.type] || c.type}：正拍 ${c.forgery.shots.filter(x => x.direction === 'front').length}＋斜拍 ${c.forgery.shots.filter(x => x.direction === 'rightSide').length}`).join('，') +
+    `（張數來源：${sides[0].forgery.counts.source === 'api' ? '伺服器' : '預設'}）`;
 }
+
+// ---------- 人證比對 ----------
+function resetMatch() { const m = $('match-result'); m.hidden = true; m.className = 'match-result'; m.innerHTML = ''; $('btn-match').disabled = false; }
+function renderMatch(r) {
+  const m = $('match-result'); m.hidden = false;
+  if (r.mock) {
+    m.className = 'match-result mock';
+    m.innerHTML = '<div class="tag">模擬結果</div><div class="big">未實際比對</div><div class="num">目前是「模擬」上傳方式，照片沒有送出，所以無法判斷是不是同一人。要真正比對，請到「設定 › 上傳方式」選「實際上傳」。</div>';
+  } else if (r.error) {
+    m.className = 'match-result err';
+    m.innerHTML = `<div class="big">無法比對</div><div class="num">${esc(r.error)}</div>`;
+  } else if (r.isMatch === true || r.isMatch === false) {
+    m.className = 'match-result ' + (r.isMatch ? 'yes' : 'no');
+    const sim = r.similarity == null ? '—' : r.similarity.toFixed(1) + '%';
+    const th = r.threshold == null ? '' : `（門檻 ${r.threshold.toFixed(1)}%）`;
+    m.innerHTML = `<div class="big">${r.isMatch ? '✓ 是同一人' : '✗ 不是同一人'}</div><div class="num">相似度 ${sim}${th}</div>` +
+      (r.isMatch ? '' : '<div class="num">請確認證件是本人的，或在光線充足處重拍人臉。</div>');
+  } else {
+    m.className = 'match-result err'; m.innerHTML = '<div class="big">無法判讀比對結果</div>';
+  }
+  log({ match: r.mock ? 'mock' : r.error ? 'error' : r.isMatch, similarity: r.similarity, threshold: r.threshold });
+}
+$('btn-match').addEventListener('click', async () => {
+  const b = $('btn-match'); b.disabled = true;
+  const m = $('match-result'); m.hidden = false; m.className = 'match-result'; m.textContent = cfg.mode === 'real' ? '比對中…' : '';
+  try { renderMatch(await compareFaces(cfg, shots.card, shots.face)); }
+  catch (e) { renderMatch({ error: e.message }); }
+  finally { b.disabled = false; }
+});
 
 // ---------- buttons ----------
 $('btn-start').addEventListener('click', () => {
   $('intro-error').hidden = true;
   state.retakeOnly = false;
+  resetSession();
   engine.prepare && engine.prepare().catch(err => console.warn('preload failed', err)); // preload face model in background
   flow('card');
 });
@@ -284,12 +376,11 @@ $('btn-upload').addEventListener('click', async () => {
     log({ upload: r.mock ? 'mock' : 'real', ok: allOk, steps: r.steps.map(s => ({ key: s.key, ok: s.ok, retake: s.retake })) });
     let html = '';
     if (r.mock) {
-      html += `<div class="ok">✓ 模擬上傳完成</div><div>資料沒有離開這支手機。實際上傳時會依序呼叫：</div>`;
+      html += `<div class="ok">✓ 模擬上傳完成</div><div>資料沒有離開這支手機。實際上傳時會依序做：</div>`;
       html += '<ol class="steps-list">' + r.steps.map(s => `<li>${esc(s.name)}</li>`).join('') + '</ol>';
-      html += `<div class="note">證件 ${shots.card.frames.length} 張（${kb(shots.card.frames)}）、人臉序列 ${shots.face.frames.length} 張（${kb(shots.face.frames)}）。</div>`;
     } else {
       html += `<div class="${allOk ? 'ok' : 'bad'}">${allOk ? '✓ 驗證完成' : '✗ 驗證未通過，請依下方說明處理'}</div>`;
-      if (r.request && r.request.requestUuid) html += `<div class="note">eKYC 案件：${esc(r.request.requestUuid)}</div>`;
+      if (r.request && r.request.requestUuid) html += `<div class="note">案件編號：${esc(r.request.requestUuid)}</div>`;
       html += r.steps.map(s => {
         let line = `<div class="step-res"><div class="${s.ok ? 'ok' : 'bad'}">${s.ok ? '✓' : '✗'} ${esc(s.name)}：${esc(s.verdict || s.error || '')}</div>`;
         if (s.summary) line += `<div class="note pre">${esc(s.summary.slice(0, 1200))}</div>`;
@@ -302,6 +393,8 @@ $('btn-upload').addEventListener('click', async () => {
       }
     }
     out.innerHTML = html;
+    if (r.mock) { if (cfg.doCompare) renderMatch({ mock: true }); }
+    else { const cs = r.steps.find(x => x.key === 'compare'); if (cs) renderMatch(cs.compare ? cs.compare : { error: cs.error || cs.verdict || cs.summary || '比對失敗' }); }
     out.querySelectorAll('[data-retake]').forEach(b => b.addEventListener('click', () => $(b.dataset.retake === 'card' ? 'btn-retake-card' : 'btn-retake-face').click()));
   } catch (e) {
     out.innerHTML = `<div class="bad">✗ 上傳失敗：${esc(e.message)}</div>`;
@@ -324,11 +417,7 @@ function fillForm() {
   if (ENGINE_KIND !== 'faceme') form.strictMode.checked = false;
   renderRealNote();
 }
-function renderRealNote() {
-  const real = form.mode.value === 'real';
-  $('real-fields').classList.toggle('inactive', !real);
-  $('real-note').textContent = real ? '目前為實際上傳，下列設定會在按「上傳」時使用。' : '目前為模擬上傳；下列設定可先調整，切換到「實際上傳」時才會使用。';
-}
+function renderRealNote() { $('real-fields').classList.toggle('inactive', form.mode.value !== 'real'); }
 let savedTimer = 0;
 function applyForm() {
   cfg = { ...cfg, mode: form.mode.value, cardType: typeSel.value };

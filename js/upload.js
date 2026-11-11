@@ -13,18 +13,26 @@ export const ENDPOINTS = {
   forgery: '/api/platform/ekyc/idcard/forgery',            // NOT in the default flow (needs extra rightSide shots)
 };
 
+// UI choices. `sides` = OCR types captured in order (TW ID: front only, or front + back).
 export const CARD_TYPES = [
-  ['TW_ID_CARD_FRONT', '國民身分證（正面）'],
-  ['TW_ID_CARD_BACK', '國民身分證（背面）'],
-  ['TW_ARC_FRONT', '居留證（正面）'],
-  ['TW_ARC_BACK', '居留證（背面）'],
-  ['TW_HEALTHCARE_CARD_FRONT', '健保卡（正面）'],
-  ['TW_DRIVER_LICENSE_FRONT', '駕照（正面）'],
-  ['TW_DRIVER_LICENSE_BACK', '駕照（背面）'],
-  ['PASSPORT', '護照'],
-  ['TW_CAR_REGISTRATION', '汽車行照'],
-  ['TW_MOTORCYCLE_REGISTRATION', '機車行照'],
+  ['TWID_FRONT', '身分證正面', ['TW_ID_CARD_FRONT']],
+  ['TWID_BOTH', '身分證兩面', ['TW_ID_CARD_FRONT', 'TW_ID_CARD_BACK']],
+  ['TW_ARC_FRONT', '居留證（正面）', ['TW_ARC_FRONT']],
+  ['TW_ARC_BACK', '居留證（背面）', ['TW_ARC_BACK']],
+  ['TW_HEALTHCARE_CARD_FRONT', '健保卡（正面）', ['TW_HEALTHCARE_CARD_FRONT']],
+  ['TW_DRIVER_LICENSE_FRONT', '駕照（正面）', ['TW_DRIVER_LICENSE_FRONT']],
+  ['TW_DRIVER_LICENSE_BACK', '駕照（背面）', ['TW_DRIVER_LICENSE_BACK']],
+  ['PASSPORT', '護照', ['PASSPORT']],
+  ['TW_CAR_REGISTRATION', '汽車行照', ['TW_CAR_REGISTRATION']],
+  ['TW_MOTORCYCLE_REGISTRATION', '機車行照', ['TW_MOTORCYCLE_REGISTRATION']],
 ];
+export const SIDE_LABEL = { TW_ID_CARD_FRONT: '正面', TW_ID_CARD_BACK: '背面' };
+/** Old saved values (v11c) -> new choice. */
+export function normalizeCardChoice(v) {
+  if (v === 'TW_ID_CARD_FRONT' || v === 'TW_ID_CARD_BACK') return 'TWID_FRONT';
+  return CARD_TYPES.some(t => t[0] === v) ? v : 'TWID_FRONT';
+}
+export const sidesOf = (choice) => (CARD_TYPES.find(t => t[0] === choice) || CARD_TYPES[0])[2];
 
 // OCR info field -> Chinese label (fields listed for each type in the API document).
 export const OCR_LABELS = {
@@ -80,7 +88,8 @@ export const forgeryApplies = (cfg, type) => !!cfg.doForgery && FORGERY_TYPES.in
 export async function getForgeryRequirement(cfg, type, signal) {
   if (cfg.mode !== 'real' || !cfg.baseUrl) return { ...FORGERY_DEFAULT_COUNTS, source: 'default' };
   try {
-    const d = await post(cfg, ENDPOINTS.forgeryRequirement, buildForgeryRequirementForm(type), signal);
+    const { call } = await prepareCall(cfg, null, signal);
+    const d = await post(call, ENDPOINTS.forgeryRequirement, buildForgeryRequirementForm(type), signal);
     const c = pick(d, 'imageCounts') || {};
     const n = (v, dflt) => (Number.isFinite(+v) && +v >= 0 && +v <= 10 ? +v : dflt);
     return { front: n(c.front, 5), rightSide: n(c.rightSide, 2), full: n(c.full, 0), source: 'api' };
@@ -221,82 +230,108 @@ export function ocrSummary(info) {
     .map(([k, v]) => `${OCR_LABELS[k] || k}：${typeof v === 'object' ? JSON.stringify(v) : v}`).join('\n');
 }
 
-/**
- * card = { image, frames[], type }, face = { image, frames[], stillIndex | (detail, still), cameraInfo }
- * Order: [create request] -> spoofingcheck -> ocr -> compare.
- * @returns {Promise<{mock:boolean, request?:object, steps:Array<{key,name,ok,verdict?,summary?,data?,error?,retake?}>}>}
- */
-export async function uploadEkyc(cfg, card, face, onStep, signal) {
-  if (cfg.mode !== 'real') {
-    const steps = [];
-    const plan = [
-      ['spoof', `人臉活體檢查（序列 ${face.frames.length} 張，still=${stillValue(face, cfg)}）`],
-      ['ocr', `證件 OCR（${card.type}，${card.frames.length} 張）`],
-      ['compare', '證件與人臉 1:1 比對'],
-    ];
-    if (card.forgery) plan.push(['forgery', `證件防偽（${card.forgery.shots.filter(x => x.direction === 'front').length} 張正面＋${card.forgery.shots.filter(x => x.direction === 'rightSide').length} 張右側斜拍）`]);
-    for (const [key, name] of plan) {
-      onStep && onStep(`模擬：${name}…`);
-      await new Promise(r => setTimeout(r, 450));
-      steps.push({ key, name, ok: true, summary: '模擬，未送出' });
-    }
-    return { mock: true, steps };
-  }
+// ---------- per-session eKYC case (Create Request) ----------
+let session = null; // { key, request, platformAuth } – memory only
+export function resetSession() { session = null; }
+function checkBase(cfg) {
   if (!/^https:\/\//i.test(cfg.baseUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(cfg.baseUrl)) {
-    throw new Error('實際上傳需要 https:// 的 eKYC Console 或代理網址');
+    throw new Error('實際上傳需要 https:// 的伺服器網址');
   }
-  const steps = [];
-  let call = cfg, request;
-  if (cfg.useRequest) {
+}
+/** Returns the config to call platform APIs with (adds the case's platformToken when "create case" is on). */
+export async function prepareCall(cfg, onStep, signal) {
+  checkBase(cfg);
+  if (!cfg.useRequest) return { call: cfg, request: null };
+  const key = cfg.baseUrl + '|' + (cfg.templateUuid || '');
+  if (!session || session.key !== key) {
     onStep && onStep('建立 eKYC 案件…');
     const d = await post(cfg, ENDPOINTS.createRequest, new URLSearchParams({ requestTemplateUuid: cfg.templateUuid || '' }), signal)
       .catch(e => { throw new Error('建立 eKYC 案件失敗：' + e.message); });
     const pt = pick(d, 'platformToken');
     if (!pt) throw new Error('建立 eKYC 案件失敗：回應沒有 platformToken');
-    request = { requestUuid: pick(d, 'requestUuid') };
-    call = { ...cfg, platformAuth: pt }; // per-request token, memory only
+    session = { key, request: { requestUuid: pick(d, 'requestUuid') }, platformAuth: pt };
   }
-  const run = async (key, name, fn, interpret) => {
+  return { call: { ...cfg, platformAuth: session.platformAuth }, request: session.request };
+}
+
+const pct = (v) => (v === undefined || v === null || isNaN(+v) ? null : (+v <= 1 ? +v * 100 : +v));
+/** compare-boost/idcard response -> { isMatch, similarity%, threshold% } */
+export function readCompare(d) {
+  const th = pick(d, 'thresholds');
+  return { isMatch: pick(d, 'isMatch'), similarity: pct(pick(d, 'similarity')), threshold: pct(th && typeof th === 'object' ? th.idcard : th) };
+}
+/** Stand-alone 人證比對 (ID photo vs selfie). Mock mode returns { mock:true } – no result is invented. */
+export async function compareFaces(cfg, card, face, signal) {
+  if (cfg.mode !== 'real') return { mock: true };
+  const { call } = await prepareCall(cfg, null, signal);
+  const d = await post(call, ENDPOINTS.compare, buildCompareForm(card, face, cfg), signal);
+  return { mock: false, ...readCompare(d), data: d };
+}
+
+/**
+ * card = { image, frames[], type, forgery?, back?: { image, frames[], type, forgery? } }
+ * face = { image, frames[], stillIndex | (detail, still), cameraInfo }
+ * Order: [create case] -> spoofingcheck -> ocr (each side) -> compare -> forgery (each side).
+ * @returns {Promise<{mock:boolean, request?:object, steps:Array<{key,name,ok,verdict?,summary?,data?,error?,retake?}>}>}
+ */
+export async function uploadEkyc(cfg, card, face, onStep, signal) {
+  const sides = [card, card.back].filter(Boolean);
+  const sideName = (c) => (sides.length > 1 ? `（${SIDE_LABEL[c.type] || c.type}）` : '');
+  if (cfg.mode !== 'real') {
+    const steps = [];
+    const plan = [['spoof', '真人檢查']];
+    sides.forEach(c => plan.push(['ocr', `讀取證件資料${sideName(c)}`]));
+    plan.push(['compare', '人證比對']);
+    sides.forEach(c => { if (c.forgery) plan.push(['forgery', `證件真偽辨識${sideName(c)}`]); });
+    for (const [key, name] of plan) {
+      onStep && onStep(`模擬：${name}…`);
+      await new Promise(r => setTimeout(r, 350));
+      steps.push({ key, name, ok: true, summary: '模擬，未送出' });
+    }
+    return { mock: true, steps };
+  }
+  const steps = [];
+  const { call, request } = await prepareCall(cfg, onStep, signal);
+  const run = async (key, name, fn, interpret, extra = {}) => {
     onStep && onStep(name + '…');
     try {
       const data = await fn();
-      steps.push({ key, name, data, ...interpret(data) });
+      steps.push({ key, name, data, ...extra, ...interpret(data) });
     } catch (e) {
-      steps.push({ key, name, ok: false, error: e.message, data: e.body, retake: e.retake });
+      steps.push({ key, name, ok: false, error: e.message, data: e.body, retake: e.retake, ...extra });
     }
   };
-  if (cfg.doSpoof) await run('spoof', '人臉活體檢查', () => post(call, ENDPOINTS.spoof, buildSpoofForm(face, cfg), signal), (d) => {
+  if (cfg.doSpoof) await run('spoof', '真人檢查', () => post(call, ENDPOINTS.spoof, buildSpoofForm(face, cfg), signal), (d) => {
     const r = pick(d, 'result'), score = pick(d, 'livenessScore'), clear = pick(d, 'clearImageIndex');
     const dfS = pick(d, 'deepfakeDetectStatus'), dfC = pick(d, 'deepfakeDetectConfidence');
-    let summary = `livenessScore：${fmt(score)}` + (clear !== undefined ? `，clearImageIndex：${fmt(clear)}` : '');
-    if (dfS) summary += `，deepfake：${dfS === 'real' ? '真人' : dfS === 'fake' ? '偽造' : dfS}（${fmt(dfC)}）`;
-    if (dfS === 'fake') return { ok: false, verdict: '偵測到深偽（deepfake）影像，請重拍人臉', summary, retake: 'face' };
-    if (r === 'liveness') return { ok: true, verdict: '活體通過', summary };
+    let summary = `分數：${fmt(score)}` + (clear !== undefined ? `，最清晰影格：${fmt(clear)}` : '');
+    if (dfS) summary += `，AI 合成臉：${dfS === 'real' ? '未發現' : dfS === 'fake' ? '疑似' : dfS}（${fmt(dfC)}）`;
+    if (dfS === 'fake') return { ok: false, verdict: '疑似 AI 合成臉，請重拍人臉', summary, retake: 'face' };
+    if (r === 'liveness') return { ok: true, verdict: '是真人', summary };
     if (r === 'spoofing') return { ok: false, verdict: '判定為非真人（翻拍／照片／面具），請重拍人臉', summary, retake: 'face' };
-    return { ok: false, verdict: '無法判讀活體結果：' + fmt(r), summary };
+    return { ok: false, verdict: '無法判讀真人檢查結果：' + fmt(r), summary };
   });
-  if (cfg.doOcr) await run('ocr', '證件 OCR', () => post(call, ENDPOINTS.ocr, buildOcrForm(card, cfg), signal), (d) => {
+  if (cfg.doOcr) for (const c of sides) await run('ocr', `讀取證件資料${sideName(c)}`, () => post(call, ENDPOINTS.ocr, buildOcrForm(c, cfg), signal), (d) => {
     const { result: r, info } = readOcr(d);
-    if (r === 'ok') return { ok: true, verdict: '辨識完成', summary: ocrSummary(info), info };
-    if (r === 'needMoreImage') return { ok: false, verdict: '證件影像不足或不清楚，系統需要更多張證件照：請重拍證件（拿穩、避免反光、讓證件填滿框線）', retake: 'card' };
-    return { ok: false, verdict: '無法判讀 OCR 結果：' + fmt(r) };
-  });
-  if (cfg.doCompare) await run('compare', '證件與人臉 1:1 比對', () => post(call, ENDPOINTS.compare, buildCompareForm(card, face, cfg), signal), (d) => {
-    const m = pick(d, 'isMatch'), s = pick(d, 'similarity'), th = pick(d, 'thresholds');
-    const thv = th && typeof th === 'object' ? th.idcard : th;
-    const summary = `similarity：${fmt(s)}` + (thv !== undefined ? `（門檻 ${fmt(thv)}）` : '');
-    if (m === true) return { ok: true, verdict: '同一人', summary };
-    if (m === false) return { ok: false, verdict: '比對不符，請確認證件與本人', summary };
+    if (r === 'ok') return { ok: true, verdict: '讀取完成', summary: ocrSummary(info), info };
+    if (r === 'needMoreImage') return { ok: false, verdict: '證件影像不夠清楚，請重拍證件（拿穩、避免反光、讓證件填滿框線）', retake: 'card' };
+    return { ok: false, verdict: '無法判讀證件資料：' + fmt(r) };
+  }, { side: c.type });
+  if (cfg.doCompare) await run('compare', '人證比對', () => post(call, ENDPOINTS.compare, buildCompareForm(card, face, cfg), signal), (d) => {
+    const c = readCompare(d);
+    const summary = `相似度 ${c.similarity === null ? '—' : c.similarity.toFixed(1) + '%'}` + (c.threshold !== null ? `（門檻 ${c.threshold.toFixed(1)}%）` : '');
+    if (c.isMatch === true) return { ok: true, verdict: '是同一人', summary, compare: c };
+    if (c.isMatch === false) return { ok: false, verdict: '不是同一人，請確認證件與本人', summary, compare: c };
     return { ok: false, verdict: '無法判讀比對結果', summary };
   });
-  if (card.forgery) await run('forgery', '證件防偽檢查', () => post(call, ENDPOINTS.forgery, buildForgeryForm(card.type, card.forgery.shots, card.forgery.full, cfg), signal), (d) => {
+  for (const c of sides) if (c.forgery) await run('forgery', `證件真偽辨識${sideName(c)}`, () => post(call, ENDPOINTS.forgery, buildForgeryForm(c.type, c.forgery.shots, c.forgery.full, cfg), signal), (d) => {
     const r = pick(d, 'result'), sc = pick(d, 'realScore'), why = pick(d, 'rejectReason');
-    const summary = `realScore：${fmt(sc)}` + (why ? `，rejectReason：${fmt(why)}` : '');
+    const summary = `分數：${fmt(sc)}` + (why ? `，原因：${fmt(why)}` : '');
     if (r === 'real') return { ok: true, verdict: '證件為真', summary };
     if (r === 'forgery') return { ok: false, verdict: '疑似偽造或翻拍的證件，請改用實體證件重拍', summary, retake: 'card' };
-    if (r === 'unknown') return { ok: false, verdict: '無法判定真偽，請在光線充足處重拍證件與防偽影像', summary, retake: 'card' };
-    return { ok: false, verdict: '無法判讀防偽結果：' + fmt(r), summary };
-  });
+    if (r === 'unknown') return { ok: false, verdict: '無法判定真偽，請在光線充足處重拍證件', summary, retake: 'card' };
+    return { ok: false, verdict: '無法判讀真偽結果：' + fmt(r), summary };
+  }, { side: c.type });
   return { mock: false, request, steps };
 }
 

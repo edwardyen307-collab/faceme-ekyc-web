@@ -1,8 +1,8 @@
 // Selfie quality gate on top of MediaPipe Face Landmarker (Apache-2.0, vendored in /vendor).
 // Decides: one face, inside oval, size, frontal pose, eyes open, not occluded, bright, sharp,
 // held still >= holdMs. Occlusion is a colour/geometry heuristic (best effort, see README).
-import { Phraser } from './hints.js?v=2026-11-11c2';
-import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11c2';
+import { phrase } from './hints.js?v=2026-11-11d';
+import { toGray, laplacianVariance, patchYCbCr } from './imageops.js?v=2026-11-11d';
 
 export const FACE_DEFAULTS = {
   minSize: 0.66, maxSize: 0.98,   // face width / oval width
@@ -50,8 +50,7 @@ export class FaceChecker {
   analyze(res, img, oval, mirrored, ts) {
     const o = this.o, W = img.width, H = img.height;
     const metrics = {};
-    if (!this.ph) this.ph = new Phraser();
-    const say = (k) => this.ph.say(k, ts);
+    const say = (k) => phrase(k);
     const fail = (state, key) => { this.holdSince = 0; return { state, ...say(key), ready: false, metrics, progress: 0 }; };
     const faces = (res && res.faceLandmarks) || [];
     metrics.faces = faces.length;
@@ -75,13 +74,15 @@ export class FaceChecker {
     const outside = (minX < 0 || minY < 0 || maxX > W || maxY > H);
 
     if (size < o.minSize * 0.75 && cdist > 0.6) return fail('position', 'face.out');
+    // position, distance and head pose are collected and merged into ONE hint (max two parts)
+    const parts = [];
     if (outside || cdist > o.maxCenter) {
       const ddx = dx * sgn; // display direction
-      if (Math.abs(ddx) >= Math.abs(dy)) return fail('position', ddx > 0 ? 'face.right' : 'face.left');
-      return fail('position', dy > 0 ? 'face.down' : 'face.up');
+      if (Math.abs(ddx) >= Math.abs(dy)) parts.push(ddx > 0 ? 'face.right' : 'face.left');
+      else parts.push(dy > 0 ? 'face.down' : 'face.up');
     }
-    if (size < o.minSize) return fail('far', 'face.far');
-    if (size > o.maxSize) return fail('near', 'face.near');
+    if (size < o.minSize) parts.push('face.far');
+    else if (size > o.maxSize) parts.push('face.near');
 
     // pose
     const ang = matrixAngles(res.facialTransformationMatrixes && res.facialTransformationMatrixes[0]);
@@ -95,15 +96,13 @@ export class FaceChecker {
     const yawBad = ang ? Math.abs(ang.yaw) > o.maxYaw : Math.abs(yawR) > o.yawRatio;
     const pitchBad = ang ? Math.abs(ang.pitch) > o.maxPitch : (pitchR < o.pitchLo || pitchR > o.pitchHi);
     const rollBad = ang ? Math.abs(ang.roll) > o.maxRoll : Math.abs(rollDeg) > o.maxRoll;
-    if (yawBad || Math.abs(yawR) > o.yawRatio * 1.6) {
-      if (Math.abs(yawR) > 0.02) return fail('yaw', yawR > 0 ? 'face.turnLeft' : 'face.turnRight');
-      return fail('yaw', 'face.front');
+    if (yawBad || Math.abs(yawR) > o.yawRatio * 1.6) parts.push(Math.abs(yawR) > 0.02 ? (yawR > 0 ? 'face.turnLeft' : 'face.turnRight') : 'face.front');
+    else if (pitchBad) parts.push(pitchR < o.pitchNeutral ? 'face.chinDown' : 'face.chinUp');
+    else if (rollBad) parts.push('face.roll');
+    if (parts.length) {
+      const st = parts[0].startsWith('face.turn') || parts[0] === 'face.front' ? 'yaw' : parts[0] === 'face.far' ? 'far' : parts[0] === 'face.near' ? 'near' : 'position';
+      return fail(st, parts);
     }
-    if (pitchBad) {
-      if (pitchR < o.pitchNeutral) return fail('pitch', 'face.chinDown');
-      return fail('pitch', 'face.chinUp');
-    }
-    if (rollBad) return fail('roll', 'face.roll');
 
     // eyes open
     const cats = res.faceBlendshapes && res.faceBlendshapes[0] && res.faceBlendshapes[0].categories;

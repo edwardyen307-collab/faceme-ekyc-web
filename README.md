@@ -3,7 +3,7 @@
 三步驟手機網頁：**① 自動拍證件 → ② 自動拍人臉 → ③ 確認／上傳**。iPhone Safari 為主要目標，Android Chrome 亦可。
 
 - 線上預覽：https://edwardyen307-collab.github.io/faceme-ekyc-web/
-- 版本：v2026-11-11c
+- 版本：v2026-11-11d
 
 ## 功能
 1. **證件**：後鏡頭，ID-1 證件框（85.6×54 mm 比例）。即時偵測證件四邊，條件全部符合才自動拍：證件填滿框（84–110%）、置中、轉正（傾斜 < 4.5°）、無大面積反光、清晰（Laplacian 變異數）、穩定 0.45 秒（多幀平滑）。即時提示：請把證件放進框內／再靠近一點／太近了／請把證件轉正／證件反光／畫面模糊／請拿穩／正在拍攝…
@@ -25,8 +25,16 @@ v2026-11-11c 起：
 - 標頭加上台北富邦銀行 logo（取自富邦官網，存於 `assets/fubon-logo.png`）與「內部測試」標示；僅供內部同仁測試。
 - 右上角「設定」按鈕在三個步驟都能開啟設定面板；變更立即套用並存在本機（Access Token、platform-auth 只放記憶體，不儲存）。修正設定面板勾選框在模擬模式被整組停用、點不動的問題。
 - 證件穩定判斷放寬：以最近 5 幀的平均邊框位置判斷晃動（容許 4.5%），畫面差異只擋大幅移動，保持 0.45 秒即拍；單幀誤判有 0.3 秒緩衝；清晰度檢查保留。
-- 證件防偽（僅國民身分證正／背面，設定中開啟）：拍完證件後引導加拍 5 張正面＋2 張右上斜拍（張數優先取自 Forgery Requirements API），顯示「第 3/5 張」進度，上傳時呼叫 `idcard/forgery`（帶 `idCardDirections`），結果顯示在確認頁。
-- 提示更醒目、更多樣：大字橫幅依狀態變色（紅＝問題、黃＝調整、綠＝保持／拍攝中），附方向箭頭與輕微動畫；同一問題持續時會換句話說；拍照時支援的裝置會震動。
+- 證件防偽（僅國民身分證正／背面，設定中開啟）：拍完證件後引導加拍 5 張正面＋2 張右上斜拍（張數優先取自 Forgery Requirements API），上傳時呼叫 `idcard/forgery`（帶 `idCardDirections`），結果顯示在確認頁。
+- 提示更醒目、更多樣：大字橫幅依狀態變色（紅＝問題、黃＝調整、綠＝保持／拍攝中），附方向箭頭與輕微動畫；拍照時支援的裝置會震動。
+
+v2026-11-11d 起：
+- 設定面板改成簡短中文（檢查項目／上傳方式／伺服器網址／存取金鑰）；技術選項收在「進階（技術人員）」。
+- 提示穩定：不再輪換句子；新提示需持續約 0.45 秒才更換，每句至少顯示 1.5 秒（變成「保持不動／拍攝中」除外）；同時有多個問題時合併成一句（例：「請把手機靠近一點，並把證件轉正」）。
+- 證件真偽辨識：5 張正面在一般拍攝時靜默收集（不顯示張數）；斜拍改用梯形斜框＋手機斜拍動畫與一句提示，偵測到斜角後靜默拍 2 張；確認頁的防偽影像收在可展開的細節中。斜角判斷：外觀長寬比明顯改變、邊框明顯傾斜，或與剛拍的正面影像差異夠大。
+- 身分證只剩「身分證正面」「身分證兩面」。兩面：拍完正面後顯示翻面動畫與提示，若鏡頭仍看到同一面會提醒「還是正面喔」；正、背面都呼叫 OCR，開啟防偽時兩面各做一次。
+- 確認頁新增「人證比對」：呼叫 `face/compare-boost/idcard`（image1＝證件、image2＝自拍），大字顯示「是同一人／不是同一人」與相似度、門檻。模擬模式明確標示「模擬結果：未實際比對」，不假造結果。完整上傳流程仍包含比對。
+- 開啟「先建立案件」時，同一次流程（防偽張數查詢、上傳、人證比對）共用同一個案件。
 
 12 秒內沒有自動拍成會出現「手動拍照」備援按鈕。
 
@@ -42,7 +50,7 @@ v2026-11-11c 起：
 
 ## 實際上傳（FaceMe eKYC Console）
 右上角「設定」→ 選「實際上傳」，填 Console 或代理網址；token 只存在記憶體，不存 localStorage、不進程式碼與網址。
-依序呼叫：（選用）`/api/request/` 建立案件 → `face/spoofingcheck`（`img_stg1_act_1`×N、`detail`、`features`）→ `idcard/ocr`（`type`、`idCardImage`×3）→ `face/compare-boost/idcard`（`image1`、`image2`、`multipleFacePriority1`）。偽造檢查（`idcard/forgery`）需額外右側斜拍，尚未納入流程。欄位清單見 [docs/API-NOTES.md](docs/API-NOTES.md)。
+依序呼叫：（選用）`/api/request/` 建立案件 → `face/spoofingcheck`（`img_stg1_act_1`×N、`detail`、`features`）→ `idcard/ocr`（`type`、`idCardImage`×3）→ `face/compare-boost/idcard`（`image1`、`image2`、`multipleFacePriority1`）。開啟證件真偽辨識時再呼叫 `idcard/forgery`（`idCardImage`×7、`idCardDirections`）。欄位清單見 [docs/API-NOTES.md](docs/API-NOTES.md)。
 
 **CORS**：手機頁在 github.io，Console 通常不允許跨網域，且 token 不該放手機。建議跑 `proxy/ekyc-proxy.mjs`（token 放伺服器環境變數、只放行 eKYC 路徑與指定 Origin），並以 HTTPS 對外；頁面設定填代理網址、token 欄留空。案件模式可設 `EKYC_TEMPLATE_UUID`，代理會固定範本並移除回應中的 ekycToken。
 
