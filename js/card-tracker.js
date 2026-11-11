@@ -3,9 +3,9 @@
 // -> per-side refinement -> temporal lock (the same quad must be seen on several consecutive frames, so a random
 // background rectangle is not locked onto) -> size / flatness / glare / sharpness / steadiness checks.
 // Works on a downscaled RGBA ImageData of the whole video frame.
-import { toGray, laplacianVariance, meanAbsDiff, glareStats } from './imageops.js?v=2026-11-11f';
-import { phrase } from './hints.js?v=2026-11-11f';
-import { CARD_ASPECT, quadGeometry } from './card-detector.js?v=2026-11-11f';
+import { toGray, laplacianVariance, meanAbsDiff, glareStats } from './imageops.js?v=2026-11-11g';
+import { phrase } from './hints.js?v=2026-11-11g';
+import { CARD_ASPECT, quadGeometry } from './card-detector.js?v=2026-11-11g';
 
 export const TRACK_DEFAULTS = {
   mode: 'front',          // 'front' (flat shot) | 'rightSide' (oblique forgery shot)

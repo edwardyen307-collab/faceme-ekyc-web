@@ -1,9 +1,9 @@
-import { APP_VERSION } from './version.js?v=2026-11-11f';
-import { Camera } from './camera.js?v=2026-11-11f';
-import { createEngine } from './engines/index.js?v=2026-11-11f';
-import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11f';
-import { phrase } from './hints.js?v=2026-11-11f';
-import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL, verifyOcrSide } from './upload.js?v=2026-11-11f';
+import { APP_VERSION } from './version.js?v=2026-11-11g';
+import { Camera } from './camera.js?v=2026-11-11g';
+import { createEngine } from './engines/index.js?v=2026-11-11g';
+import { CARD_ASPECT, CARD_RIGHTSIDE, CARD_BACK } from './card-detector.js?v=2026-11-11g';
+import { phrase } from './hints.js?v=2026-11-11g';
+import { loadConfig, saveConfig, uploadEkyc, CARD_TYPES, stillValue, forgeryApplies, getForgeryRequirement, compareFaces, resetSession, normalizeCardChoice, sidesOf, SIDE_LABEL, verifyOcrSide } from './upload.js?v=2026-11-11g';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -14,7 +14,7 @@ const els = {
   stage: $('stage'), video: $('video'), hint: $('hint'), progress: $('progress'), shade: $('shade'), guide: $('guide'),
   detected: $('detected'), overlay: $('overlay'), flash: $('flash'), metrics: $('metrics'), stageTitle: $('stage-title'),
   track: $('track'), trackCorners: $('track-corners'),
-  manual: $('btn-manual'), banner: $('banner'), hintIcon: $('hint-icon'), demo: $('demo'), demoText: $('demo-text'), ring: $('ring'),
+  manual: $('btn-manual'), retrySide: $('btn-retry-side'), banner: $('banner'), hintIcon: $('hint-icon'), demo: $('demo'), demoText: $('demo-text'), ring: $('ring'),
 };
 const ICONS = { left: '←', right: '→', up: '↑', down: '↓', closer: '＋', farther: '－', rotate: '↻', flat: '▭', tiltright: '↗', frame: '⛶',
   still: '✋', ok: '✓', glare: '☀', light: '💡', blur: '◎', block: '!', person: '!', eye: '👁', wait: '…', flip: '⇋' };
@@ -181,7 +181,7 @@ function cameraErrorText(e) {
 }
 
 function resetStageUi(title) {
-  forceRef.now = false; els.manual.hidden = true; clearTimeout(state.manualTimer);
+  forceRef.now = false; els.manual.hidden = true; els.retrySide.hidden = true; clearTimeout(state.manualTimer);
   state.disp = { key: null, since: 0, level: '' }; state.pend = { key: null, since: 0 };
   demo(null); els.ring.hidden = true;
   if (title) els.stageTitle.textContent = title;
@@ -198,7 +198,15 @@ async function openStage(kind, title) {
   await camera.open(kind === 'face' ? 'user' : 'environment');
   layoutGuide(kind);
   log({ camera: camera.facing, w: els.video.videoWidth, h: els.video.videoHeight });
-  return { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef };
+  return { camera, stage: els.stage, ui, getGuide: () => state.guide, forceRef, waitRetry };
+}
+// TW ID side check could not load its model: capture is blocked until the user taps 「重試載入」
+function waitRetry() {
+  return new Promise((resolve) => {
+    clearTimeout(state.manualTimer); els.manual.hidden = true; forceRef.now = false;
+    els.retrySide.hidden = false;
+    els.retrySide.onclick = () => { els.retrySide.hidden = true; els.retrySide.onclick = null; log({ sideCheckRetry: true }); armManual(); resolve(); };
+  });
 }
 
 // expected aspect for auto-tracking / deskew (ID-1 cards by default)
@@ -226,7 +234,7 @@ async function captureSide(ctx, type, opts) {
     flash();
     shot = raw instanceof Blob ? { image: raw, frames: [raw] } : raw;
     shot.type = type;
-    log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: forceRef.now, verdict: shot.side, votes: shot.votes, m: shot.metrics, track, deskewed: !!shot.deskewed });
+    log({ captured: 'card', side: type, bytes: shot.image.size, frames: shot.frames.length, front: (shot.front || []).length, manual: !!shot.manual || forceRef.now, verdict: shot.side, votes: shot.votes, m: shot.metrics, track, deskewed: !!shot.deskewed });
     // real mode: OCR once right away and make sure the fields belong to this side (mock mode: skipped, nothing sent)
     if (cfg.mode !== 'real' || !cfg.ocrSideCheck || !side) break;
     ui.update({ state: 'checking', ...phrase('card.ocrChecking'), progress: 0 }, null, null, true);
@@ -342,9 +350,9 @@ function showReview() {
   show('review');
   $('img-card').src = shots.cardUrl; $('img-face').src = shots.faceUrl;
   const c = shots.card;
-  $('card-meta').textContent = `${typeLabel()}${c.back ? '・正面' : ''}` + (c.deskewed ? '・已自動校正（拉正）' : '') + (c.frames.length < 3 ? '・手動拍照只有 1 張，讀取資料可能要求補拍，建議重拍讓系統自動拍。' : '');
+  $('card-meta').textContent = `${typeLabel()}${c.back ? '・正面' : ''}` + (c.side && /^TW_ID/.test(c.type || '') ? '・已通過身分證' + (c.side === 'front' ? '正面' : '背面') + '檢查' + (c.manual ? '（手動拍照）' : '') + (c.sdk ? '（FaceMe SDK）' : '') : '') + (c.deskewed ? '・已自動校正（拉正）' : '') + (c.frames.length < 3 ? '・手動拍照只有 1 張，讀取資料可能要求補拍，建議重拍讓系統自動拍。' : '');
   $('back-fig').hidden = !c.back;
-  if (c.back) { $('img-back').src = shots.backUrl; $('back-meta').textContent = '身分證背面' + (c.back.deskewed ? '・已自動校正（拉正）' : ''); }
+  if (c.back) { $('img-back').src = shots.backUrl; $('back-meta').textContent = '身分證背面' + (c.back.side === 'back' ? '・已通過身分證背面檢查' + (c.back.manual ? '（手動拍照）' : '') : '') + (c.back.deskewed ? '・已自動校正（拉正）' : ''); }
   resetMatch();
   renderForgery();
   $('face-meta').textContent = shots.face.detail ? '真人檢查資料由 FaceMe 元件產生' : `自拍（含 ${shots.face.frames.length} 張連拍供真人檢查）`;

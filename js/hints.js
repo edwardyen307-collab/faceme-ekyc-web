@@ -39,6 +39,10 @@ export const PHRASES = {
   // positive side features / wrong document
   'card.notFront': P('problem', 'flip', '這不是身分證正面，請改拿身分證有照片的那面'),
   'card.notBack': P('problem', 'flip', '這不是身分證背面，請把身分證翻到背面'),
+  'card.sideLoadFail': P('problem', 'wait', '證件檢查元件載入失敗，請重新整理（或按「重試載入」）'),
+  'card.manualWait': P('adjust', 'wait', '系統確認是身分證後才會拍，請把證件放進框內拿穩'),
+  'card.manualNoCard': P('problem', 'wait', '沒有看到身分證，無法手動拍照；請把身分證放進框內'),
+  'card.sdkNotFront': P('problem', 'flip', '剛剛拍到的不是身分證正面，請拿身分證有照片的那面重拍'),
   'card.upsideDown': P('problem', 'rotate', '證件上下顛倒了，請把證件轉正'),
   'card.ocrWrongFront': P('problem', 'flip', '辨識結果是背面，請翻到有照片的正面重拍'),
   'card.ocrWrongBack': P('problem', 'flip', '辨識結果是正面，請翻到背面重拍'),

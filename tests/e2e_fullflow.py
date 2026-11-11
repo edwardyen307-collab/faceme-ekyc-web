@@ -62,6 +62,7 @@ with sync_playwright() as p:
     b = p.chromium.launch(executable_path='/opt/google/chrome/chrome', headless=True, args=['--autoplay-policy=no-user-gesture-required'])
     page = b.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, is_mobile=True, has_touch=True).new_page()
     page.add_init_script(INIT)
+    if os.environ.get("EKYC_INIT_JS"): page.add_init_script(path=os.environ["EKYC_INIT_JS"])  # e.g. window.__fakeSdkCards for the SDK stub
     FEEDMAP = {'card.webm': os.environ.get('FEED_CARD', 'card') + '.webm', 'face.webm': os.environ.get('FEED_FACE', 'face') + '.webm'}
     page.route('**/__feeds/*.webm', lambda r: r.fulfill(path=os.path.join(OUT, FEEDMAP.get(r.request.url.split('/')[-1], r.request.url.split('/')[-1])), content_type='video/webm'))
     if not REAL and EXTRA:

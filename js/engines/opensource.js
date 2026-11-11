@@ -1,15 +1,15 @@
 // Default engine: free, in-browser detection (own card-border heuristic + MediaPipe Face Landmarker).
-// Results (v2026-11-11f):
+// Results (v2026-11-11g):
 //   captureIdCard -> { image: Blob (best frame), frames: Blob[] (best ~3, sharpest first, for idcard/ocr) }
 //   captureFace   -> { image: Blob (still frame, for compare), frames: Blob[] (stage-1 sequence for
 //                      face/spoofingcheck img_stg1_act_1), stillIndex: 0-based index of the still frame in frames,
 //                      cameraInfo: string }
-import { CardDetector, CARD_ASPECT, quadGeometry } from '../card-detector.js?v=2026-11-11f';
-import { CardTracker } from '../card-tracker.js?v=2026-11-11f';
-import { deskewBlob } from '../warp.js?v=2026-11-11f';
-import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11f';
-import { SideClassifier, sideMismatchKey } from '../side-classifier.js?v=2026-11-11f';
-import { phrase } from '../hints.js?v=2026-11-11f';
+import { CardDetector, CARD_ASPECT, quadGeometry } from '../card-detector.js?v=2026-11-11g';
+import { CardTracker } from '../card-tracker.js?v=2026-11-11g';
+import { deskewBlob } from '../warp.js?v=2026-11-11g';
+import { FaceChecker, loadLandmarker } from '../face-checker.js?v=2026-11-11g';
+import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11g';
+import { phrase } from '../hints.js?v=2026-11-11g';
 
 const FRAME_MS = 70;          // ~14 fps analysis
 const CARD_KEEP = 3;          // OCR doc recommends >= 3 idCardImage
@@ -45,11 +45,9 @@ export class OpenSourceEngine {
       ? new CardTracker({ mode, aspect, ...(ctx.trackOptions || {}) })
       : new CardDetector({ ...(ctx.cardOptions || {}) });
     let sideCls = null;
-    if (ctx.side) {
-      sideCls = new SideClassifier();
-      ctx.ui.update({ state: 'loading', hint: '準備相機中…', level: 'adjust', dir: 'wait', progress: 0, metrics: {} });
-      if (!(await sideCls.load())) sideCls = null; // model unavailable: geometry-only (logged)
-    }
+    // TW ID: the side check is mandatory; if its model fails to load the capture is blocked (retry button), never skipped
+    if (ctx.side) sideCls = await loadSideClassifierOrBlock(ctx, this);
+    let manualSince = 0; // TW ID manual button: pressed at (the shot is taken only once the side check agrees)
     const GOOD = new Set(['hold', 'steady', 'capture']);
     const KEEP = ctx.keep || CARD_KEEP;
     const MIN = Math.max(ctx.minFrames || 0, ctx.collectFront || 0);
@@ -89,21 +87,39 @@ export class OpenSourceEngine {
           quadVideo = [{ x: rectVideo.x, y: rectVideo.y }, { x: rectVideo.x + rectVideo.w, y: rectVideo.y }, { x: rectVideo.x + rectVideo.w, y: rectVideo.y + rectVideo.h }, { x: rectVideo.x, y: rectVideo.y + rectVideo.h }];
         }
       }
-      if (sideCls && !ctx.forceRef.now) {
-        sideCls.tick(ts, tracking ? !!quadVideo : (!!out.rect && out.metrics.found >= 3));
-        if (quadVideo && GOOD.has(out.state)) sideCls.observe(v, quadVideo, ts, aspect);
+      let manualOk = false; // TW ID: manual press AND the side check agrees with the requested side
+      if (sideCls) {
+        const present = tracking ? !!quadVideo : (!!out.rect && out.metrics.found >= 3);
+        const manual = !!ctx.forceRef.now;
+        if (manual && !manualSince) manualSince = ts;
+        sideCls.tick(ts, present || (manual && !!quadVideo));
+        // normally only steady frames are checked; after a manual press any frame with a card outline is checked
+        if (quadVideo && (GOOD.has(out.state) || manual)) sideCls.observe(v, quadVideo, ts, aspect);
+        // votes older than 1.5 s (no steady frame since, e.g. the card was swapped while tilted) are stale: forget them
+        if (sideCls.votes.length && ts - sideCls.last > 1500) sideCls.votes = [];
         const verdict = sideCls.verdict();
         out.metrics.side = verdict || '?'; out.metrics.votes = sideCls.summary;
-        if (sideCls.lastFeat) { out.metrics.bc = sideCls.lastFeat.barcode; out.metrics.chroma = sideCls.lastFeat.chroma; out.metrics.face = sideCls.lastFeat.face; }
+        const lf = sideCls.lastFeat;
+        if (lf) { out.metrics.why = lf.why || lf.label; out.metrics.bc = lf.bc && lf.bc.bars; out.metrics.face = lf.face ? lf.face.ok : null; }
         const bad = sideMismatchKey(ctx.side, verdict);
         if (bad && quadVideo) {
-          // wrong side / not this document in view: never capture it; drop anything collected from it
+          // wrong side / not this document in view: never capture it (manual press included); drop anything collected
           dropAll();
+          if (manual) { ctx.forceRef.now = false; manualSince = 0; }
           out = { ...out, state: 'wrongside', ...phrase(bad), ready: false, progress: 0 };
+        } else if (manual) {
+          if (verdict === ctx.side && quadVideo) manualOk = true;
+          else if (ts - manualSince > 4000) {
+            // nothing confirmed within 4 s: refuse this press
+            ctx.forceRef.now = false; manualSince = 0;
+            out = { ...out, state: 'wrongside', ...phrase(quadVideo ? 'card.manualWait' : 'card.manualNoCard'), ready: false, progress: 0 };
+          } else out = { ...out, state: 'hold', ...phrase('card.manualWait'), ready: false, progress: Math.min(out.progress || 0, 0.8) };
         } else if (verdict !== ctx.side && (out.ready || out.state === 'hold')) {
           out = { ...out, state: 'hold', ...phrase('card.sideCheck'), ready: false, progress: Math.min(out.progress || 0, 0.8) };
         }
+        if (!ctx.forceRef.now) manualSince = 0;
       }
+      const forced = sideCls ? manualOk : ctx.forceRef.now;
       ctx.ui.update(out, rectVideo && !tracking ? cam.videoToDisplay(rectVideo) : null);
       // every frame that passes all checks (holding still) is a candidate for the OCR set
       if ((out.state === 'hold' || out.state === 'capture') && rectVideo && ts - lastGrab >= (MIN > KEEP ? 80 : CARD_GRAB_MS)) {
@@ -116,18 +132,24 @@ export class OpenSourceEngine {
         if (MIN > KEEP) all.push(b);
       }
       const collected = MIN > KEEP ? all.length : cands.length;
-      if (out.ready && !ctx.forceRef.now && collected < MIN) {
+      if (out.ready && !forced && collected < MIN) {
         // all checks passed; keep "capturing" a little longer to gather the extra frames silently
         if (!readySince) readySince = ts;
         if (ts - readySince < 4000) return null;
       }
-      if (out.ready || ctx.forceRef.now) {
-        if (!cands.length || ctx.forceRef.now) {
-          const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : (g ? pad(g, 0.02) : { x: 0, y: 0, w: v.videoWidth, h: v.videoHeight });
-          keep({ blob: await cam.grab(src, 1600), sharp: ctx.forceRef.now ? Infinity : (out.metrics.sharp || 0), quad: null });
+      if (out.ready || forced) {
+        if (!cands.length || forced) {
+          if (sideCls && forced && quadVideo) {
+            // TW ID manual shot (side confirmed): keep the outline so the tracked crop can still be deskewed
+            const gm = await cam.grabMeta(pad(rectVideo, tracking ? 0.05 : 0.04), 1600);
+            keep({ blob: gm.blob, sharp: Infinity, quad: quadVideo.map(p => ({ x: (p.x - gm.region.x) * gm.scale, y: (p.y - gm.region.y) * gm.scale })) });
+          } else {
+            const src = (out.ready && rectVideo) ? pad(rectVideo, 0.04) : (g ? pad(g, 0.02) : { x: 0, y: 0, w: v.videoWidth, h: v.videoHeight });
+            keep({ blob: await cam.grab(src, 1600), sharp: forced ? Infinity : (out.metrics.sharp || 0), quad: null });
+          }
         }
         const originals = cands.map(c => c.blob);
-        const res = { image: originals[0], frames: originals, originals, side: sideCls ? sideCls.verdict() : null, votes: sideCls ? sideCls.summary : '', metrics: out.metrics };
+        const res = { image: originals[0], frames: originals, originals, manual: !!forced, side: sideCls ? sideCls.verdict() : null, votes: sideCls ? sideCls.summary : '', metrics: out.metrics };
         if (tracking && mode !== 'rightSide' && cands.every(c => c.quad)) {
           // perspective-corrected crops for display / OCR; the originals stay for forgery
           try {

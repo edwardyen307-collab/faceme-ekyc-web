@@ -45,9 +45,21 @@ def main(p):
     page.screenshot(path=SHOT + '2-face-step-on-card-feed.png')
     b.close()
 
+    # 1b) TW ID + manual button on a feed with NO ID card (face feed): must be refused (no bypass, v11g)
+    b, page = launch(p, 'face')
+    page.goto(BASE + '?debug=1&manualAfter=1500')
+    page.click('#btn-start')
+    page.wait_for_selector('#btn-manual:not([hidden])', timeout=15000)
+    for _ in range(2):
+        page.click('#btn-manual'); time.sleep(4.5)
+    results['twid_manual_without_id_refused'] = not page.evaluate("window.__ekyc.events.some(e => e.captured === 'card')")
+    results['twid_manual_hints'] = hints(page)[-3:]
+    b.close()
+
     # 2) face feed: card via manual button, then face auto capture, then review
     b, page = launch(p, 'face')
     page.goto(BASE + '?debug=1&manualAfter=1500')
+    page.select_option('#card-type', 'TW_ARC_FRONT')  # TW ID manual capture needs a passing front/back check (v11g)
     page.click('#btn-start')
     page.wait_for_selector('#btn-manual:not([hidden])', timeout=15000)
     page.click('#btn-manual')
@@ -86,6 +98,7 @@ def main(p):
     # 3) masked face: should NOT auto-capture, hint should mention occlusion
     b, page = launch(p, 'face-mask')
     page.goto(BASE + '?debug=1&manualAfter=1500')
+    page.select_option('#card-type', 'TW_ARC_FRONT')  # TW ID manual capture needs a passing front/back check (v11g)
     page.click('#btn-start')
     page.wait_for_selector('#btn-manual:not([hidden])', timeout=15000)
     page.click('#btn-manual')
@@ -102,6 +115,7 @@ def main(p):
     for feed in ('face-offset', 'face-far'):
         b, page = launch(p, feed)
         page.goto(BASE + '?debug=1&manualAfter=1500')
+        page.select_option('#card-type', 'TW_ARC_FRONT')
         page.click('#btn-start')
         page.wait_for_selector('#btn-manual:not([hidden])', timeout=15000)
         page.click('#btn-manual')

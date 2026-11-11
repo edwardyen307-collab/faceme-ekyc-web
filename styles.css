@@ -197,7 +197,7 @@ details.forgery-fig summary { cursor:pointer; }
 .sheet .adv[open] summary::before { transform:rotate(90deg); }
 .sheet .adv summary::-webkit-details-marker { display:none; }
 
-/* ---- v2026-11-11f ---- */
+/* ---- v2026-11-11g ---- */
 .oblique-fig { margin:0 12px 12px; background:var(--card); border-radius:12px; padding:10px; }
 .oblique-fig figcaption { font-size:15px; font-weight:700; margin-bottom:8px; }
 .ostrip { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; }

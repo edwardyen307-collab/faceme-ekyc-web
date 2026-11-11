@@ -14,6 +14,9 @@
 // Enable with ?engine=faceme&sdk=<url of faceme-web-sdk.js>  (default ./sdk/faceme-web-sdk.js;
 // models are expected in <sdk dir>/res unless &sdkRes=<path> is given).
 
+import { loadSideClassifierOrBlock, sideMismatchKey } from '../side-classifier.js?v=2026-11-11g';
+import { phrase } from '../hints.js?v=2026-11-11g';
+
 // eKYC Console OCR `type` -> SDK idCardStep. Types without an auto-capture step fall back to the
 // open-source engine (the SDK only offers manual captureImage via 'front_g').
 export const ID_CARD_STEP = {
@@ -98,6 +101,7 @@ export class FaceMeSdkEngine {
     try { if (this._active === 'card') F && F.stopIDCardCapture(); if (this._active === 'face') F && F.stopAntiSpoofing(); } catch (_) {}
     if (this._reject) { const r = this._reject; this._reject = null; r(Object.assign(new Error('cancelled'), { code: 'cancelled' })); }
     this._active = null; this._unmount();
+    if (this._cancel) { const c = this._cancel; this._cancel = null; c(); }
     if (this.fallback) this.fallback.cancel();
   }
   release() { try { window.FaceMe && window.FaceMe.release(); } catch (_) {} this._face = this._card = null; }
@@ -139,6 +143,23 @@ export class FaceMeSdkEngine {
       throw new Error('FaceMe SDK 不支援自動拍攝此證件類型：' + ctx.cardType);
     }
     const F = await this.initCard();
+    // TW ID front: the SDK has no front/back check of its own, so the returned crops go through the same layout
+    // check as the built-in engine (portrait band, label column, ID-number row, colours). Mismatch -> retake.
+    const sideCls = ctx.side ? await loadSideClassifierOrBlock(ctx, this) : null;
+    for (;;) {
+      const res = await this._sdkCard(ctx, F, step);
+      if (!sideCls) return res;
+      const verdict = await sideCls.classifyImages(res.frames);
+      res.side = verdict; res.votes = sideCls.summary; res.sdk = true;
+      if (verdict === ctx.side) return res;
+      console.warn('SDK card capture rejected by side check', verdict, sideCls.summary, sideCls.lastFeat);
+      if (!ctx.camera.stream) { try { await ctx.camera.open('environment'); } catch (_) {} }
+      ctx.ui.update({ state: 'wrongside', ...phrase(ctx.side === 'front' && sideMismatchKey('front', verdict) !== 'card.upsideDown' ? 'card.sdkNotFront' : (sideMismatchKey(ctx.side, verdict) || 'card.notBack')), progress: 0, metrics: { side: verdict, votes: sideCls.summary } }, null, null, true);
+      await new Promise(r => setTimeout(r, 2200));
+    }
+  }
+
+  async _sdkCard(ctx, F, step) {
     ctx.camera.stop();
     ctx.ui.update({ state: 'sdk', hint: 'FaceMe SDK：請依畫面指示拍攝證件', progress: 0, metrics: {} });
     const ids = this._mount(ctx.stage);

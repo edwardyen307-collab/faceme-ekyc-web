@@ -17,6 +17,9 @@
       calls.push(['startIDCardCapture', cs]);
       if (!document.getElementById(cs.sdkBlockId)) return fail({ code: 100, message: 'invalid sdkBlockId' });
       show(cs.hintBlockId, '（假 SDK）證件拍攝中…');
+      // tests can supply card images per call: window.__fakeSdkCards = [[dataUrl, ...] (1st call), [...] (2nd call), ...]
+      const sets = window.__fakeSdkCards; window.__fakeSdkCardCalls = (window.__fakeSdkCardCalls || 0) + 1;
+      if (sets && sets.length) { const set = sets[Math.min(window.__fakeSdkCardCalls - 1, sets.length - 1)]; return setTimeout(() => ok(set.slice(), null, set.map((_, i) => 0.9 - i * 0.1), null), 600); }
       setTimeout(() => ok([frame(640, 404, 30).data, frame(640, 404, 60).data, frame(640, 404, 90).data, frame(640, 404, 120).data], null, [0.5, 0.9, 0.7, 0.2], null), 600);
     },
     stopIDCardCapture() { calls.push(['stopIDCardCapture']); },
